@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    username: root
+    password: root
+  data:
+    redis:
+      host: 192.168.242.10
+      port: 6379
+  rabbitmq:
+    host: 192.168.242.10
+    port: 5672
+    username: guest
+    password: guest
+
+security:
+  jwt:
+    secret: smart-exam-cloud-secret-key-must-be-at-least-32-bytes
+    expiration-seconds: 7200
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+

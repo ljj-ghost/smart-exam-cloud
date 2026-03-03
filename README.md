@@ -20,6 +20,9 @@ smart-exam-cloud/
     grading-service/
     analysis-service/
   docs/
+    nacos/
+      common.yaml
+      *.yaml
     sql/
       01_init_databases.sql
       02_core_tables.sql
@@ -86,6 +89,13 @@ smart-exam-cloud/
 docker compose up -d
 ```
 
+Nacos 2.x 除了 `8848` 外，还需要暴露 gRPC 端口 `9848`、`9849` 供 Java 客户端连接。
+可用以下命令快速确认：
+
+```bash
+docker compose ps nacos
+```
+
 ## 3.3 初始化数据库
 
 `docker-compose.yml` 已挂载 `docs/sql` 到 MySQL 初始化目录。
@@ -95,19 +105,38 @@ docker compose up -d
   - `docs/sql/01_init_databases.sql`
   - `docs/sql/02_core_tables.sql`
 
-## 3.4 编译
+## 3.4 初始化 Nacos 配置中心
+
+项目已接入 Nacos 服务发现 + 配置中心。服务启动时会加载：
+
+- `common.yaml`
+- `${spring.application.name}.yaml`
+
+请先在 Nacos 中导入 `docs/nacos/` 下模板文件，详情见：
+
+- `docs/nacos/README.md`
+
+默认 Nacos 地址为 `192.168.242.10:8848`，可通过环境变量覆盖：
+
+- `NACOS_SERVER_ADDR`
+- `NACOS_USERNAME`
+- `NACOS_PASSWORD`
+- `NACOS_GROUP`
+- `NACOS_NAMESPACE`
+
+## 3.5 编译
 
 ```bash
 mvn clean package -DskipTests
 ```
 
-## 3.5 逐个启动服务
+## 3.6 逐个启动服务
 
 建议顺序：
 
 1. `auth-service`（9001）
 2. `user-service`（9100）
-3. `question-service`（9200）
+3. `question-service`（9210）
 4. `exam-service`（9300）
 5. `grading-service`（9400）
 6. `analysis-service`（9500）
@@ -134,4 +163,5 @@ curl http://localhost:9000/api/v1/users/me \
 
 - Redis 当前用于防重、幂等与热点缓存。
 - RabbitMQ 用于 `exam -> grading -> analysis` 事件链路。
+- Nacos 用于服务注册发现与统一配置管理。
 - SQL 已包含必要索引与唯一约束（如会话唯一、事件落库去重相关约束）。

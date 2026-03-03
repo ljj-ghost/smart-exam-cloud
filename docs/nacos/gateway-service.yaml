@@ -1,0 +1,32 @@
+server:
+  port: 9000
+
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: auth-service
+          uri: lb://auth-service
+          predicates:
+            - Path=/api/v1/auth/**
+        - id: user-service
+          uri: lb://user-service
+          predicates:
+            - Path=/api/v1/users/**
+        - id: question-service
+          uri: lb://question-service
+          predicates:
+            - Path=/api/v1/questions/**,/api/v1/papers/**
+        - id: exam-service
+          uri: lb://exam-service
+          predicates:
+            - Path=/api/v1/exams/**,/api/v1/sessions/**
+        - id: grading-service
+          uri: lb://grading-service
+          predicates:
+            - Path=/api/v1/grading/**
+        - id: analysis-service
+          uri: lb://analysis-service
+          predicates:
+            - Path=/api/v1/reports/**
+

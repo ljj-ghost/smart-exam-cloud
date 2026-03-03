@@ -1,6 +1,7 @@
 package com.smart.exam.grading.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.Queue;
@@ -35,7 +36,9 @@ public class RabbitConfig {
     }
 
     @Bean
-    public Binding examSubmittedBinding(Queue examSubmittedQueue, TopicExchange examExchange) {
+    public Binding examSubmittedBinding(
+            @Qualifier("examSubmittedQueue") Queue examSubmittedQueue,
+            @Qualifier("examExchange") TopicExchange examExchange) {
         return BindingBuilder.bind(examSubmittedQueue).to(examExchange).with(EXAM_SUBMITTED_ROUTING_KEY);
     }
 
