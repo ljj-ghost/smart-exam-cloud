@@ -1,48 +1,71 @@
-version: "3.8"
-
 services:
   mysql:
-    image: mysql:8.0
+    command:
+      - --default-authentication-plugin=mysql_native_password
     container_name: smart-exam-mysql
     environment:
       MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: user_db
       TZ: Asia/Shanghai
-    command: --default-authentication-plugin=mysql_native_password
+    image: mysql:8.0
+    networks:
+      - default
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./docs/sql:/docker-entrypoint-initdb.d
 
   redis:
-    image: redis:7
     container_name: smart-exam-redis
+    image: redis:7
+    networks:
+      - default
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
 
   rabbitmq:
-    image: rabbitmq:3-management
     container_name: smart-exam-rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
+    image: rabbitmq:3-management
+    networks:
+      - default
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
 
   nacos:
-    image: nacos/nacos-server:v2.3.2
     container_name: smart-exam-nacos
+    image: nacos/nacos-server:v2.3.2
+    networks:
+      - default
     environment:
-      - MODE=standalone
-      - PREFER_HOST_MODE=hostname
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
     ports:
       - "8848:8848"
+      - "9848:9848"
+      - "9849:9849"
+    volumes:
+      - nacos_data:/home/nacos/data
+      - nacos_logs:/home/nacos/logs
+
+networks:
+  default:
+    name: smart-exam-mw_default
 
 volumes:
   mysql_data:
+    name: smart-exam-mw_mysql_data
+  nacos_data:
+    name: smart-exam-mw_nacos_data
+  nacos_logs:
+    name: smart-exam-mw_nacos_logs
+  rabbitmq_data:
+    name: smart-exam-mw_rabbitmq_data
   redis_data:
-
+    name: smart-exam-mw_redis_data
