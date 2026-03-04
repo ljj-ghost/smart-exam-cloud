@@ -1,6 +1,7 @@
 package com.smart.exam.grading.controller;
 
 import com.smart.exam.common.core.model.ApiResponse;
+import com.smart.exam.common.web.security.RoleGuard;
 import com.smart.exam.grading.dto.ManualScoreRequest;
 import com.smart.exam.grading.model.GradingTask;
 import com.smart.exam.grading.service.GradingDomainService;
@@ -27,7 +28,11 @@ public class GradingController {
     }
 
     @GetMapping("/tasks")
-    public ApiResponse<Collection<GradingTask>> listTasks(@RequestParam(required = false) String status) {
+    public ApiResponse<Collection<GradingTask>> listTasks(
+            @RequestParam(required = false) String status,
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        requireTeacherOrAdmin(userId, role);
         return ApiResponse.ok(gradingDomainService.listTasks(status));
     }
 
@@ -35,8 +40,15 @@ public class GradingController {
     public ApiResponse<GradingTask> manualScore(
             @PathVariable String taskId,
             @Valid @RequestBody ManualScoreRequest request,
-            @RequestHeader(value = "X-User-Id", defaultValue = "20001") String graderId) {
-        return ApiResponse.ok(gradingDomainService.manualScore(taskId, request, graderId));
+            @RequestHeader(value = "X-User-Id", required = false) String graderId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        String safeGraderId = requireTeacherOrAdmin(graderId, role);
+        return ApiResponse.ok(gradingDomainService.manualScore(taskId, request, safeGraderId));
+    }
+
+    private String requireTeacherOrAdmin(String userId, String role) {
+        String safeUserId = RoleGuard.requireUserId(userId);
+        RoleGuard.requireRole(role, "ADMIN", "TEACHER");
+        return safeUserId;
     }
 }
-

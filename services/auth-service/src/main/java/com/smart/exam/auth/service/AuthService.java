@@ -12,6 +12,7 @@ import com.smart.exam.common.security.jwt.JwtUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -36,6 +37,7 @@ public class AuthService {
     private final SysUserMapper sysUserMapper;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+    private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final Map<String, DemoUser> demoUsers = Map.of(
             "admin", new DemoUser(10001L, "admin", "123456", "ADMIN", "System Admin"),
             "teacher1", new DemoUser(20001L, "teacher1", "123456", "TEACHER", "Teacher One"),
@@ -60,9 +62,15 @@ public class AuthService {
             user = tryCreateDemoUser(request);
         }
 
-        if (user == null || !passwordMatches(request.getPassword(), user.getPasswordHash())) {
+        if (user == null) {
             throw new BizException(ErrorCode.UNAUTHORIZED, "Invalid username or password");
         }
+
+        boolean passwordMatched = passwordMatches(request.getPassword(), user.getPasswordHash());
+        if (!passwordMatched) {
+            throw new BizException(ErrorCode.UNAUTHORIZED, "Invalid username or password");
+        }
+        upgradePasswordHashIfNeeded(user, request.getPassword());
         if (user.getStatus() == null || user.getStatus() != 1) {
             throw new BizException(ErrorCode.FORBIDDEN, "User is disabled");
         }
@@ -100,7 +108,7 @@ public class AuthService {
             SysUserEntity entity = new SysUserEntity();
             entity.setId(demoUser.id());
             entity.setUsername(demoUser.username());
-            entity.setPasswordHash(demoUser.password());
+            entity.setPasswordHash(passwordEncoder.encode(demoUser.password()));
             entity.setRealName(demoUser.realName());
             entity.setRole(demoUser.role());
             entity.setStatus(1);
@@ -145,7 +153,35 @@ public class AuthService {
     }
 
     private boolean passwordMatches(String rawPassword, String storedPasswordHash) {
-        return StringUtils.hasText(rawPassword) && rawPassword.equals(storedPasswordHash);
+        if (!StringUtils.hasText(rawPassword) || !StringUtils.hasText(storedPasswordHash)) {
+            return false;
+        }
+        if (isBcryptHash(storedPasswordHash)) {
+            try {
+                return passwordEncoder.matches(rawPassword, storedPasswordHash);
+            } catch (Exception ex) {
+                log.warn("Failed to verify bcrypt password", ex);
+                return false;
+            }
+        }
+        return rawPassword.equals(storedPasswordHash);
+    }
+
+    private void upgradePasswordHashIfNeeded(SysUserEntity user, String rawPassword) {
+        if (user == null || !StringUtils.hasText(rawPassword) || isBcryptHash(user.getPasswordHash())) {
+            return;
+        }
+        try {
+            user.setPasswordHash(passwordEncoder.encode(rawPassword));
+            sysUserMapper.updateById(user);
+            cacheUser(user);
+        } catch (Exception ex) {
+            log.warn("Failed to upgrade password hash, userId={}", user.getId(), ex);
+        }
+    }
+
+    private boolean isBcryptHash(String value) {
+        return StringUtils.hasText(value) && value.startsWith("$2");
     }
 
     private void evictUserCache(String username) {

@@ -1,6 +1,7 @@
 package com.smart.exam.question.controller;
 
 import com.smart.exam.common.core.model.ApiResponse;
+import com.smart.exam.common.web.security.RoleGuard;
 import com.smart.exam.question.dto.CreatePaperRequest;
 import com.smart.exam.question.dto.CreateQuestionRequest;
 import com.smart.exam.question.model.Paper;
@@ -30,30 +31,50 @@ public class QuestionController {
     @PostMapping("/questions")
     public ApiResponse<Question> createQuestion(
             @Valid @RequestBody CreateQuestionRequest request,
-            @RequestHeader(value = "X-User-Id", defaultValue = "20001") String userId) {
-        return ApiResponse.ok(questionDomainService.createQuestion(request, userId));
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        String operatorId = requireTeacherOrAdmin(userId, role);
+        return ApiResponse.ok(questionDomainService.createQuestion(request, operatorId));
     }
 
     @GetMapping("/questions")
-    public ApiResponse<Collection<Question>> listQuestions() {
+    public ApiResponse<Collection<Question>> listQuestions(
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        requireTeacherOrAdmin(userId, role);
         return ApiResponse.ok(questionDomainService.listQuestions());
     }
 
     @GetMapping("/questions/{questionId}")
-    public ApiResponse<Question> getQuestion(@PathVariable String questionId) {
+    public ApiResponse<Question> getQuestion(
+            @PathVariable String questionId,
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        requireTeacherOrAdmin(userId, role);
         return ApiResponse.ok(questionDomainService.findQuestion(questionId));
     }
 
     @PostMapping("/papers")
     public ApiResponse<Paper> createPaper(
             @Valid @RequestBody CreatePaperRequest request,
-            @RequestHeader(value = "X-User-Id", defaultValue = "20001") String userId) {
-        return ApiResponse.ok(questionDomainService.createPaper(request, userId));
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        String operatorId = requireTeacherOrAdmin(userId, role);
+        return ApiResponse.ok(questionDomainService.createPaper(request, operatorId));
     }
 
     @GetMapping("/papers/{paperId}")
-    public ApiResponse<Paper> getPaper(@PathVariable String paperId) {
+    public ApiResponse<Paper> getPaper(
+            @PathVariable String paperId,
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        requireTeacherOrAdmin(userId, role);
         return ApiResponse.ok(questionDomainService.findPaper(paperId));
     }
-}
 
+    private String requireTeacherOrAdmin(String userId, String role) {
+        String safeUserId = RoleGuard.requireUserId(userId);
+        RoleGuard.requireRole(role, "ADMIN", "TEACHER");
+        return safeUserId;
+    }
+}

@@ -3,6 +3,7 @@ package com.smart.exam.user.controller;
 import com.smart.exam.common.core.error.BizException;
 import com.smart.exam.common.core.error.ErrorCode;
 import com.smart.exam.common.core.model.ApiResponse;
+import com.smart.exam.common.web.security.RoleGuard;
 import com.smart.exam.user.model.UserProfile;
 import com.smart.exam.user.service.UserProfileService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,10 +29,8 @@ public class UserController {
     public ApiResponse<Map<String, Object>> me(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role) {
-        if (userId == null || userId.isBlank()) {
-            throw new BizException(ErrorCode.UNAUTHORIZED);
-        }
-        UserProfile profile = userProfileService.findById(userId);
+        String currentUserId = RoleGuard.requireUserId(userId);
+        UserProfile profile = userProfileService.findById(currentUserId);
         if (profile == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "User not found");
         }
@@ -39,7 +38,11 @@ public class UserController {
     }
 
     @GetMapping("/{id}")
-    public ApiResponse<UserProfile> detail(@PathVariable String id) {
+    public ApiResponse<UserProfile> detail(
+            @PathVariable String id,
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        requireTeacherOrAdmin(userId, role);
         UserProfile profile = userProfileService.findById(id);
         if (profile == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "User not found");
@@ -48,7 +51,15 @@ public class UserController {
     }
 
     @GetMapping
-    public ApiResponse<Collection<UserProfile>> list() {
+    public ApiResponse<Collection<UserProfile>> list(
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role) {
+        requireTeacherOrAdmin(userId, role);
         return ApiResponse.ok(userProfileService.listAll());
+    }
+
+    private void requireTeacherOrAdmin(String userId, String role) {
+        RoleGuard.requireUserId(userId);
+        RoleGuard.requireRole(role, "ADMIN", "TEACHER");
     }
 }

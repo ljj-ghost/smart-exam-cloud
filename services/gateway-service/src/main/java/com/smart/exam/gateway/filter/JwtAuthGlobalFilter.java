@@ -12,11 +12,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 
 @Component
 public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
@@ -51,11 +53,17 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
         } catch (JwtException | IllegalArgumentException ex) {
             return unauthorized(exchange, ErrorCode.UNAUTHORIZED.getMessage());
         }
+        String userId = claims.getSubject();
+        Object roleValue = claims.get("role");
+        String role = roleValue == null ? null : String.valueOf(roleValue).trim();
+        if (!StringUtils.hasText(userId) || !StringUtils.hasText(role)) {
+            return unauthorized(exchange, ErrorCode.UNAUTHORIZED.getMessage());
+        }
 
         ServerHttpRequest request = exchange.getRequest()
                 .mutate()
-                .header("X-User-Id", claims.getSubject())
-                .header("X-Role", String.valueOf(claims.get("role")))
+                .header("X-User-Id", userId)
+                .header("X-Role", role.toUpperCase(Locale.ROOT))
                 .build();
 
         return chain.filter(exchange.mutate().request(request).build());
@@ -78,4 +86,3 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
         return exchange.getResponse().writeWith(Mono.just(exchange.getResponse().bufferFactory().wrap(bytes)));
     }
 }
-
