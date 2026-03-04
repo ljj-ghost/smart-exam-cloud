@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smart.exam.auth.dto.LoginRequest;
 import com.smart.exam.auth.entity.SysUserEntity;
+import com.smart.exam.auth.mapper.RolePermissionReadMapper;
 import com.smart.exam.auth.mapper.SysUserMapper;
 import com.smart.exam.common.core.error.BizException;
 import com.smart.exam.common.core.error.ErrorCode;
@@ -20,9 +21,16 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class AuthService {
@@ -35,6 +43,7 @@ public class AuthService {
 
     private final JwtUtil jwtUtil;
     private final SysUserMapper sysUserMapper;
+    private final RolePermissionReadMapper rolePermissionReadMapper;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
@@ -43,13 +52,66 @@ public class AuthService {
             "teacher1", new DemoUser(20001L, "teacher1", "123456", "TEACHER", "Teacher One"),
             "stu1", new DemoUser(30001L, "stu1", "123456", "STUDENT", "Student One")
     );
+    private final Map<String, List<String>> defaultPermissionsByRole = Map.of(
+            "ADMIN", List.of(
+                    "ADMIN_PLATFORM_ACCESS",
+                    "ADMIN_OVERVIEW_READ",
+                    "ADMIN_USER_VIEW",
+                    "ADMIN_USER_STATUS_UPDATE",
+                    "ADMIN_USER_ROLE_UPDATE",
+                    "ADMIN_USER_PASSWORD_RESET",
+                    "ADMIN_ROLE_PERMISSION_ASSIGN",
+                    "ADMIN_CONFIG_READ",
+                    "ADMIN_CONFIG_WRITE",
+                    "ADMIN_AUDIT_READ",
+                    "EXAM_CREATE",
+                    "EXAM_SESSION_START",
+                    "EXAM_ANSWER_SAVE",
+                    "EXAM_SESSION_SUBMIT",
+                    "GRADING_TASK_VIEW",
+                    "GRADING_MANUAL_SCORE",
+                    "QUESTION_CREATE",
+                    "QUESTION_LIST",
+                    "QUESTION_DETAIL",
+                    "PAPER_CREATE",
+                    "PAPER_DETAIL",
+                    "REPORT_SCORE_DISTRIBUTION_VIEW",
+                    "REPORT_QUESTION_ACCURACY_VIEW",
+                    "USER_SELF_VIEW",
+                    "USER_PROFILE_VIEW",
+                    "USER_LIST_VIEW"
+            ),
+            "TEACHER", List.of(
+                    "EXAM_CREATE",
+                    "GRADING_TASK_VIEW",
+                    "GRADING_MANUAL_SCORE",
+                    "QUESTION_CREATE",
+                    "QUESTION_LIST",
+                    "QUESTION_DETAIL",
+                    "PAPER_CREATE",
+                    "PAPER_DETAIL",
+                    "REPORT_SCORE_DISTRIBUTION_VIEW",
+                    "REPORT_QUESTION_ACCURACY_VIEW",
+                    "USER_SELF_VIEW",
+                    "USER_PROFILE_VIEW",
+                    "USER_LIST_VIEW"
+            ),
+            "STUDENT", List.of(
+                    "EXAM_SESSION_START",
+                    "EXAM_ANSWER_SAVE",
+                    "EXAM_SESSION_SUBMIT",
+                    "USER_SELF_VIEW"
+            )
+    );
 
     public AuthService(JwtUtil jwtUtil,
                        SysUserMapper sysUserMapper,
+                       RolePermissionReadMapper rolePermissionReadMapper,
                        StringRedisTemplate redisTemplate,
                        ObjectMapper objectMapper) {
         this.jwtUtil = jwtUtil;
         this.sysUserMapper = sysUserMapper;
+        this.rolePermissionReadMapper = rolePermissionReadMapper;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
     }
@@ -74,11 +136,15 @@ public class AuthService {
         if (user.getStatus() == null || user.getStatus() != 1) {
             throw new BizException(ErrorCode.FORBIDDEN, "User is disabled");
         }
+        List<String> permissionCodes = loadPermissionCodes(user.getRole());
 
         String token = jwtUtil.generateToken(
                 String.valueOf(user.getId()),
                 user.getRole(),
-                Map.of("username", user.getUsername())
+                Map.of(
+                        "username", user.getUsername(),
+                        "permissions", permissionCodes
+                )
         );
 
         Map<String, Object> payload = new HashMap<>();
@@ -87,7 +153,8 @@ public class AuthService {
         payload.put("user", Map.of(
                 "id", String.valueOf(user.getId()),
                 "username", user.getUsername(),
-                "role", user.getRole()
+                "role", user.getRole(),
+                "permissions", permissionCodes
         ));
         return payload;
     }
@@ -226,6 +293,44 @@ public class AuthService {
         } catch (NoSuchAlgorithmException ex) {
             throw new BizException(ErrorCode.INTERNAL_ERROR, "SHA-256 unavailable");
         }
+    }
+
+    private List<String> loadPermissionCodes(String role) {
+        String normalizedRole = normalizeRole(role);
+        List<String> dbPermissions = Collections.emptyList();
+        try {
+            dbPermissions = rolePermissionReadMapper.selectPermissionCodesByRoleCode(normalizedRole);
+        } catch (Exception ex) {
+            log.warn("Failed to load role permissions from DB, role={}", normalizedRole, ex);
+        }
+
+        Set<String> merged = new LinkedHashSet<>();
+        if (dbPermissions != null) {
+            merged.addAll(normalizePermissions(dbPermissions));
+        }
+
+        if (merged.isEmpty()) {
+            merged.addAll(defaultPermissionsByRole.getOrDefault(normalizedRole, List.of()));
+        }
+        return new ArrayList<>(merged);
+    }
+
+    private String normalizeRole(String role) {
+        if (!StringUtils.hasText(role)) {
+            return "";
+        }
+        return role.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private List<String> normalizePermissions(List<String> permissions) {
+        if (permissions == null) {
+            return List.of();
+        }
+        return permissions.stream()
+                .filter(StringUtils::hasText)
+                .map(value -> value.trim().toUpperCase(Locale.ROOT))
+                .distinct()
+                .collect(Collectors.toList());
     }
 
     private record DemoUser(Long id, String username, String password, String role, String realName) {

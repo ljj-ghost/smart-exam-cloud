@@ -44,11 +44,11 @@ public class AdminController {
 
     @GetMapping("/users")
     public ApiResponse<Map<String, Object>> listUsers(
-            @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String roleCode,
-            @RequestParam(required = false) Integer status,
-            @RequestParam(required = false) Long page,
-            @RequestParam(required = false) Long size,
+            @RequestParam(name = "keyword", required = false) String keyword,
+            @RequestParam(name = "roleCode", required = false) String roleCode,
+            @RequestParam(name = "status", required = false) Integer status,
+            @RequestParam(name = "page", required = false) Long page,
+            @RequestParam(name = "size", required = false) Long size,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role) {
         requireAdmin(userId, role);
@@ -57,7 +57,7 @@ public class AdminController {
 
     @PutMapping("/users/{userId}/status")
     public ApiResponse<Void> updateUserStatus(
-            @PathVariable String userId,
+            @PathVariable("userId") String userId,
             @Valid @RequestBody UpdateUserStatusRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String operatorId,
             @RequestHeader(value = "X-Role", required = false) String operatorRole,
@@ -76,7 +76,7 @@ public class AdminController {
 
     @PutMapping("/users/{userId}/role")
     public ApiResponse<Void> updateUserRole(
-            @PathVariable String userId,
+            @PathVariable("userId") String userId,
             @Valid @RequestBody UpdateUserRoleRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String operatorId,
             @RequestHeader(value = "X-Role", required = false) String operatorRole,
@@ -95,7 +95,7 @@ public class AdminController {
 
     @PutMapping("/users/{userId}/password/reset")
     public ApiResponse<Void> resetPassword(
-            @PathVariable String userId,
+            @PathVariable("userId") String userId,
             @Valid @RequestBody ResetPasswordRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String operatorId,
             @RequestHeader(value = "X-Role", required = false) String operatorRole,
@@ -130,7 +130,7 @@ public class AdminController {
 
     @PutMapping("/roles/{roleCode}/permissions")
     public ApiResponse<Void> updateRolePermissions(
-            @PathVariable String roleCode,
+            @PathVariable("roleCode") String roleCode,
             @Valid @RequestBody UpdateRolePermissionsRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String operatorId,
             @RequestHeader(value = "X-Role", required = false) String operatorRole,
@@ -149,8 +149,8 @@ public class AdminController {
 
     @GetMapping("/configs")
     public ApiResponse<Map<String, Object>> listConfigs(
-            @RequestParam(required = false) String groupKey,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(name = "groupKey", required = false) String groupKey,
+            @RequestParam(name = "keyword", required = false) String keyword,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role) {
         requireAdmin(userId, role);
@@ -159,7 +159,7 @@ public class AdminController {
 
     @PutMapping("/configs/{configKey}")
     public ApiResponse<Void> upsertConfig(
-            @PathVariable String configKey,
+            @PathVariable("configKey") String configKey,
             @Valid @RequestBody UpsertConfigRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String operatorId,
             @RequestHeader(value = "X-Role", required = false) String operatorRole,
@@ -178,13 +178,13 @@ public class AdminController {
 
     @GetMapping("/audits")
     public ApiResponse<Map<String, Object>> listAudits(
-            @RequestParam(required = false) String operatorId,
-            @RequestParam(required = false) String action,
-            @RequestParam(required = false) String targetType,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startTime,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endTime,
-            @RequestParam(required = false) Long page,
-            @RequestParam(required = false) Long size,
+            @RequestParam(name = "operatorId", required = false) String operatorId,
+            @RequestParam(name = "action", required = false) String action,
+            @RequestParam(name = "targetType", required = false) String targetType,
+            @RequestParam(name = "startTime", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startTime,
+            @RequestParam(name = "endTime", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endTime,
+            @RequestParam(name = "page", required = false) Long page,
+            @RequestParam(name = "size", required = false) Long size,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role) {
         requireAdmin(userId, role);

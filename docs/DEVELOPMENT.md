@@ -239,6 +239,40 @@ curl -X PUT http://localhost:9000/api/v1/admin/roles/TEACHER/permissions \
 
 4. 在 `GET /api/v1/admin/audits` 查询最新审计日志，确认以上操作均有落库记录。
 
+### 10.7 细粒度 RBAC（第二批）联调检查
+
+本批次已将以下服务接口接入 `X-Permissions` 细粒度校验：
+
+- `question-service`：题目创建/列表/详情、试卷创建/详情
+- `analysis-service`：分数分布、题目正确率 TopN 报表
+- `user-service`：`/users/me`、`/users/{id}`、`/users`
+
+联调前置条件：
+
+1. 重新执行 `docs/sql/02_core_tables.sql`（包含新增权限码与角色映射）。
+2. 重启 `auth-service`、`gateway-service`、`question-service`、`analysis-service`、`user-service`。
+3. 重新登录获取新 token（旧 token 可能不含 `permissions` claim）。
+
+验证建议：
+
+1. 学生账号可访问 `/api/v1/users/me`，不可访问 `/api/v1/questions`、`/api/v1/reports/**`、`/api/v1/users`。
+2. 教师账号可访问 `/api/v1/questions`、`/api/v1/reports/**`、`/api/v1/users`。
+3. 管理员账号可访问上述全部接口（管理员默认放行权限校验，仍受接口角色边界约束）。
+
+示例（教师）：
+
+```bash
+curl -X POST http://localhost:9000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"teacher1\",\"password\":\"123456\"}"
+
+curl http://localhost:9000/api/v1/questions \
+  -H "Authorization: Bearer <teacher-token>"
+
+curl "http://localhost:9000/api/v1/reports/exams/<examId>/score-distribution" \
+  -H "Authorization: Bearer <teacher-token>"
+```
+
 ## 12. 常见问题
 
 ### 12.1 服务启动后连不上 Nacos
@@ -268,6 +302,13 @@ curl -X PUT http://localhost:9000/api/v1/admin/roles/TEACHER/permissions \
 
 - 说明你使用的是旧数据库结构（未包含新表）
 - 重新执行 `docs/sql/02_core_tables.sql`，或手动创建 `a_session_question_score`
+
+### 12.6 接口返回 `403 Insufficient permission`
+
+- 先确认是否使用了旧 token：重新登录后再试。
+- 确认已执行最新 `docs/sql/02_core_tables.sql`，并且 `sys_role_permission` 中存在目标权限码。
+- 如果你通过管理员接口改过角色权限，检查是否把必需权限移除了。
+- 确认请求经过网关（`gateway-service`）转发；权限头 `X-Permissions` 由网关注入。
 
 ## 13. 常用命令
 

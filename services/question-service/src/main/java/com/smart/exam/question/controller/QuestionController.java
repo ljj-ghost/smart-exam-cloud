@@ -1,6 +1,7 @@
 package com.smart.exam.question.controller;
 
 import com.smart.exam.common.core.model.ApiResponse;
+import com.smart.exam.common.web.security.PermissionCodes;
 import com.smart.exam.common.web.security.RoleGuard;
 import com.smart.exam.question.dto.CreatePaperRequest;
 import com.smart.exam.question.dto.CreateQuestionRequest;
@@ -32,25 +33,28 @@ public class QuestionController {
     public ApiResponse<Question> createQuestion(
             @Valid @RequestBody CreateQuestionRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        String operatorId = requireTeacherOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        String operatorId = requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.QUESTION_CREATE);
         return ApiResponse.ok(questionDomainService.createQuestion(request, operatorId));
     }
 
     @GetMapping("/questions")
     public ApiResponse<Collection<Question>> listQuestions(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        requireTeacherOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.QUESTION_LIST);
         return ApiResponse.ok(questionDomainService.listQuestions());
     }
 
     @GetMapping("/questions/{questionId}")
     public ApiResponse<Question> getQuestion(
-            @PathVariable String questionId,
+            @PathVariable("questionId") String questionId,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        requireTeacherOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.QUESTION_DETAIL);
         return ApiResponse.ok(questionDomainService.findQuestion(questionId));
     }
 
@@ -58,23 +62,26 @@ public class QuestionController {
     public ApiResponse<Paper> createPaper(
             @Valid @RequestBody CreatePaperRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        String operatorId = requireTeacherOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        String operatorId = requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.PAPER_CREATE);
         return ApiResponse.ok(questionDomainService.createPaper(request, operatorId));
     }
 
     @GetMapping("/papers/{paperId}")
     public ApiResponse<Paper> getPaper(
-            @PathVariable String paperId,
+            @PathVariable("paperId") String paperId,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        requireTeacherOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.PAPER_DETAIL);
         return ApiResponse.ok(questionDomainService.findPaper(paperId));
     }
 
-    private String requireTeacherOrAdmin(String userId, String role) {
+    private String requireTeacherOrAdmin(String userId, String role, String permissions, String requiredPermission) {
         String safeUserId = RoleGuard.requireUserId(userId);
         RoleGuard.requireRole(role, "ADMIN", "TEACHER");
+        RoleGuard.requirePermission(role, permissions, requiredPermission);
         return safeUserId;
     }
 }

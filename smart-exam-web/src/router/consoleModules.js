@@ -1,0 +1,77 @@
+import {
+  Connection,
+  Document,
+  Files,
+  Histogram,
+  Notebook,
+  Reading,
+  Setting,
+} from '@element-plus/icons-vue'
+
+export const consoleModules = [
+  {
+    path: '/connection',
+    name: 'connection',
+    icon: Connection,
+    label: '环境连接',
+    tagline: '网关、登录与会话验证',
+    description: '先完成 API 地址配置和账号登录，再进入后续业务页面。',
+    tips: ['优先使用网关地址进行联调。', '登录后刷新上下文，确认角色与权限。', '切换环境后先执行一次用户列表校验。'],
+  },
+  {
+    path: '/questions',
+    name: 'questions',
+    icon: Reading,
+    label: '题库中心',
+    tagline: '题目录入与维护',
+    description: '统一管理题型、答案和知识点，保证后续组卷与阅卷输入一致。',
+    tips: ['客观题优先补齐标准答案。', '录题时保持答案格式统一。', '创建后立刻回查详情，避免脏数据。'],
+  },
+  {
+    path: '/papers',
+    name: 'papers',
+    icon: Files,
+    label: '试卷编排',
+    tagline: '题目组合与分值配置',
+    description: '根据考试目标组织题目顺序、分值和时长，输出可直接开考的试卷。',
+    tips: ['创建后先核对总分。', '题目顺序要与业务需求一致。', '试卷 ID 建议立即记录用于开考。'],
+  },
+  {
+    path: '/exams',
+    name: 'exams',
+    icon: Notebook,
+    label: '考试会话',
+    tagline: '开考、作答与交卷',
+    description: '围绕考试时间窗管理会话，支持保存答案与提交试卷。',
+    tips: ['开考前校验开始/结束时间。', '会话 ID 使用开始考试返回值。', '提交后可直接到阅卷中心跟进任务。'],
+  },
+  {
+    path: '/grading',
+    name: 'grading',
+    icon: Document,
+    label: '阅卷中心',
+    tagline: '自动评分与人工补评',
+    description: '按任务状态处理阅卷流程，人工评分后发布最终成绩。',
+    tips: ['先过滤 MANUAL_REQUIRED 任务。', '人工评分要覆盖全部主观题。', '提交后到报表页核验变化。'],
+  },
+  {
+    path: '/reports',
+    name: 'reports',
+    icon: Histogram,
+    label: '分析报表',
+    tagline: '分布与正确率洞察',
+    description: '查看成绩分布与题目正确率，为教学与命题优化提供依据。',
+    tips: ['先用考试 ID 拉取分布数据。', 'TopN 建议从 10 开始。', '数据无变化时先确认阅卷任务状态。'],
+  },
+  {
+    path: '/admin',
+    name: 'admin',
+    icon: Setting,
+    label: '管理后台',
+    tagline: '用户、权限与配置治理',
+    description: '集中处理用户、角色权限、系统配置和审计日志。',
+    tips: ['高风险操作前先写明原因。', '权限变更后立即回查角色详情。', '定期核查审计日志与时间范围。'],
+  },
+]
+
+export const recommendedFlow = consoleModules.map((item) => item.label).join(' -> ')

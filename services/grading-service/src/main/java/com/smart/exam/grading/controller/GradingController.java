@@ -1,6 +1,7 @@
 package com.smart.exam.grading.controller;
 
 import com.smart.exam.common.core.model.ApiResponse;
+import com.smart.exam.common.web.security.PermissionCodes;
 import com.smart.exam.common.web.security.RoleGuard;
 import com.smart.exam.grading.dto.ManualScoreRequest;
 import com.smart.exam.grading.model.GradingTask;
@@ -29,26 +30,34 @@ public class GradingController {
 
     @GetMapping("/tasks")
     public ApiResponse<Collection<GradingTask>> listTasks(
-            @RequestParam(required = false) String status,
+            @RequestParam(name = "status", required = false) String status,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        requireTeacherOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.GRADING_TASK_VIEW);
         return ApiResponse.ok(gradingDomainService.listTasks(status));
     }
 
     @PostMapping("/tasks/{taskId}/manual-score")
     public ApiResponse<GradingTask> manualScore(
-            @PathVariable String taskId,
+            @PathVariable("taskId") String taskId,
             @Valid @RequestBody ManualScoreRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String graderId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        String safeGraderId = requireTeacherOrAdmin(graderId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        String safeGraderId = requireTeacherOrAdmin(
+                graderId,
+                role,
+                permissions,
+                PermissionCodes.GRADING_MANUAL_SCORE
+        );
         return ApiResponse.ok(gradingDomainService.manualScore(taskId, request, safeGraderId));
     }
 
-    private String requireTeacherOrAdmin(String userId, String role) {
+    private String requireTeacherOrAdmin(String userId, String role, String permissions, String requiredPermission) {
         String safeUserId = RoleGuard.requireUserId(userId);
         RoleGuard.requireRole(role, "ADMIN", "TEACHER");
+        RoleGuard.requirePermission(role, permissions, requiredPermission);
         return safeUserId;
     }
 }

@@ -41,11 +41,13 @@ smart-exam-cloud/
 - 网关 `gateway-service`
   - 路由转发（按 `/api/v1/**`）
   - JWT 全局鉴权过滤器
-  - 请求头注入：`X-User-Id`、`X-Role`
+  - 请求头注入：`X-User-Id`、`X-Role`、`X-Permissions`
 
 - 认证 `auth-service`（`user_db` + Redis）
   - `POST /api/v1/auth/login`
   - `POST /api/v1/auth/logout`
+  - 登录响应与 JWT claim 携带权限码集合（`permissions`）
+  - 权限来源优先读取角色权限矩阵（`admin_db.sys_role_permission`），读取失败时按角色默认权限回退
   - 账号来源：`sys_user`
   - 首次登录演示账号会自动补齐：`admin/teacher1/stu1`，密码 `123456`
 
@@ -53,6 +55,7 @@ smart-exam-cloud/
   - `GET /api/v1/users/me`
   - `GET /api/v1/users/{id}`
   - `GET /api/v1/users`
+  - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
 - 题库 `question-service`（`question_db` + Redis）
   - `POST /api/v1/questions`
@@ -60,6 +63,7 @@ smart-exam-cloud/
   - `GET /api/v1/questions/{questionId}`
   - `POST /api/v1/papers`
   - `GET /api/v1/papers/{paperId}`
+  - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
 - 考试 `exam-service`（`exam_db` + Redis + RabbitMQ）
   - `POST /api/v1/exams`
@@ -68,6 +72,7 @@ smart-exam-cloud/
   - `POST /api/v1/sessions/{sessionId}/submit`
   - 考试状态自动流转：`NOT_STARTED -> RUNNING -> FINISHED`
   - 交卷发布 `exam.submitted` 事件
+  - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
 - 判卷 `grading-service`（`grading_db` + Redis + RabbitMQ）
   - 监听 `exam.submitted.q`
@@ -76,12 +81,14 @@ smart-exam-cloud/
   - `GET /api/v1/grading/tasks`
   - `POST /api/v1/grading/tasks/{taskId}/manual-score`
   - 发布携带每题得分明细的 `score.published` 事件
+  - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
 - 分析 `analysis-service`（`analysis_db` + Redis + RabbitMQ）
   - 监听 `score.published.q`
   - 沉淀会话-题目得分快照（`a_session_question_score`）
   - `GET /api/v1/reports/exams/{examId}/score-distribution`
   - `GET /api/v1/reports/exams/{examId}/question-accuracy-top`（基于真实判分结果聚合）
+  - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
 - 管理 `admin-service`（`user_db + admin_db` + Redis）
   - `GET /api/v1/admin/overview`
@@ -119,10 +126,9 @@ docker compose ps nacos
 
 ## 3.3 初始化数据库
 
-`docker-compose.yml` 已挂载 `docs/sql` 到 MySQL 初始化目录。
+注意：当前 `docker-compose.yml` 未挂载 `docs/sql` 到 MySQL 初始化目录，需手动执行 SQL。
 
-- 首次启动（空数据卷）会自动执行 SQL。
-- 若你已经有旧数据卷，初始化脚本不会自动重跑，需要手动执行：
+- 建议每次 schema 有变更后重跑：
   - `docs/sql/01_init_databases.sql`
   - `docs/sql/02_core_tables.sql`
 
@@ -187,3 +193,10 @@ curl http://localhost:9000/api/v1/users/me \
 - RabbitMQ 用于 `exam -> grading -> analysis` 事件链路。
 - Nacos 用于服务注册发现与统一配置管理。
 - SQL 已包含必要索引与唯一约束（如会话唯一、事件落库去重相关约束）。
+
+## 6. 迭代进度（截至 2026-03-04）
+
+- 管理员中心（用户治理、角色权限、系统配置、审计日志）已完成。
+- MQ 可靠投递与消费失败治理（重试、DLQ）已完成。
+- 考试状态自动流转、真实客观判题与题目正确率统计链路已完成。
+- 网关之外业务服务的接口级 RBAC（除 `admin-service`）已完成。

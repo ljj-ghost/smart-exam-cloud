@@ -1,6 +1,7 @@
 package com.smart.exam.exam.controller;
 
 import com.smart.exam.common.core.model.ApiResponse;
+import com.smart.exam.common.web.security.PermissionCodes;
 import com.smart.exam.common.web.security.RoleGuard;
 import com.smart.exam.exam.dto.CreateExamRequest;
 import com.smart.exam.exam.dto.SaveAnswersRequest;
@@ -32,51 +33,57 @@ public class ExamController {
     public ApiResponse<Exam> createExam(
             @Valid @RequestBody CreateExamRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        String operatorId = requireTeacherOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        String operatorId = requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.EXAM_CREATE);
         return ApiResponse.ok(examDomainService.createExam(request, operatorId));
     }
 
     @PostMapping("/exams/{examId}/start")
     public ApiResponse<Map<String, Object>> startExam(
-            @PathVariable String examId,
+            @PathVariable("examId") String examId,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions,
             HttpServletRequest servletRequest) {
-        String studentId = requireStudentOrAdmin(userId, role);
+        String studentId = requireStudentOrAdmin(userId, role, permissions, PermissionCodes.EXAM_SESSION_START);
         String ip = servletRequest.getRemoteAddr();
         return ApiResponse.ok(examDomainService.startExam(examId, studentId, ip));
     }
 
     @PutMapping("/sessions/{sessionId}/answers")
     public ApiResponse<Void> saveAnswers(
-            @PathVariable String sessionId,
+            @PathVariable("sessionId") String sessionId,
             @Valid @RequestBody SaveAnswersRequest request,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        String studentId = requireStudentOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        String studentId = requireStudentOrAdmin(userId, role, permissions, PermissionCodes.EXAM_ANSWER_SAVE);
         examDomainService.saveAnswers(sessionId, request, studentId);
         return ApiResponse.ok();
     }
 
     @PostMapping("/sessions/{sessionId}/submit")
     public ApiResponse<Map<String, Object>> submit(
-            @PathVariable String sessionId,
+            @PathVariable("sessionId") String sessionId,
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestHeader(value = "X-Role", required = false) String role) {
-        String studentId = requireStudentOrAdmin(userId, role);
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        String studentId = requireStudentOrAdmin(userId, role, permissions, PermissionCodes.EXAM_SESSION_SUBMIT);
         return ApiResponse.ok(examDomainService.submit(sessionId, studentId));
     }
 
-    private String requireTeacherOrAdmin(String userId, String role) {
+    private String requireTeacherOrAdmin(String userId, String role, String permissions, String requiredPermission) {
         String safeUserId = RoleGuard.requireUserId(userId);
         RoleGuard.requireRole(role, "ADMIN", "TEACHER");
+        RoleGuard.requirePermission(role, permissions, requiredPermission);
         return safeUserId;
     }
 
-    private String requireStudentOrAdmin(String userId, String role) {
+    private String requireStudentOrAdmin(String userId, String role, String permissions, String requiredPermission) {
         String safeUserId = RoleGuard.requireUserId(userId);
         RoleGuard.requireRole(role, "ADMIN", "STUDENT");
+        RoleGuard.requirePermission(role, permissions, requiredPermission);
         return safeUserId;
     }
 }

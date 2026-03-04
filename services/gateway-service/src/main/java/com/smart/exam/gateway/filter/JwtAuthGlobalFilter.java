@@ -17,8 +17,10 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Collectors;
 
 @Component
 public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
@@ -56,15 +58,20 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
         String userId = claims.getSubject();
         Object roleValue = claims.get("role");
         String role = roleValue == null ? null : String.valueOf(roleValue).trim();
+        String permissions = normalizePermissions(claims.get("permissions"));
         if (!StringUtils.hasText(userId) || !StringUtils.hasText(role)) {
             return unauthorized(exchange, ErrorCode.UNAUTHORIZED.getMessage());
         }
 
-        ServerHttpRequest request = exchange.getRequest()
+        ServerHttpRequest.Builder builder = exchange.getRequest()
                 .mutate()
                 .header("X-User-Id", userId)
-                .header("X-Role", role.toUpperCase(Locale.ROOT))
-                .build();
+                .header("X-Role", role.toUpperCase(Locale.ROOT));
+        if (StringUtils.hasText(permissions)) {
+            builder.header("X-Permissions", permissions);
+        }
+
+        ServerHttpRequest request = builder.build();
 
         return chain.filter(exchange.mutate().request(request).build());
     }
@@ -84,5 +91,23 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
         exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
         exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
         return exchange.getResponse().writeWith(Mono.just(exchange.getResponse().bufferFactory().wrap(bytes)));
+    }
+
+    private String normalizePermissions(Object permissionsClaim) {
+        if (permissionsClaim == null) {
+            return "";
+        }
+        if (permissionsClaim instanceof Collection<?> values) {
+            return values.stream()
+                    .filter(item -> item != null && StringUtils.hasText(String.valueOf(item)))
+                    .map(item -> String.valueOf(item).trim().toUpperCase(Locale.ROOT))
+                    .distinct()
+                    .collect(Collectors.joining(","));
+        }
+        String raw = String.valueOf(permissionsClaim).trim();
+        if (!StringUtils.hasText(raw)) {
+            return "";
+        }
+        return raw;
     }
 }
