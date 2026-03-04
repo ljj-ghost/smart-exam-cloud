@@ -183,7 +183,9 @@ Redis 主要用途：
 
 - Exchange：`exam.exchange`（Topic）
 - RoutingKey：`exam.submitted`、`score.published`
-- Queue：`exam.submitted.q`、`score.published.q`
+- Queue：
+  - `exam.submitted.q`、`exam.submitted.retry.q`、`exam.submitted.dlq.q`
+  - `score.published.q`、`score.published.retry.q`、`score.published.dlq.q`
 
 事件契约：
 
@@ -192,9 +194,9 @@ Redis 主要用途：
 
 一致性说明：
 
-- 当前为“业务事务 + 最佳努力消息”模式。
-- 消费端通过 Redis 去重和 DB 唯一约束保障幂等。
-- 分析侧按 `sessionId` Upsert，满足最终一致。
+- 发布端启用 `publisher-confirm-type=correlated` 与 `publisher-returns=true`，支持发布确认与路由失败回调。
+- 消费端启用手动 ACK，失败后进入重试队列（TTL 回流主队列），超过重试上限转入 DLQ。
+- 消费端通过 Redis 去重和 DB 唯一约束保障幂等，分析侧按 `sessionId` Upsert 满足最终一致。
 
 ## 9. 配置中心与环境管理
 
@@ -257,14 +259,14 @@ Redis 主要用途：
 
 - 中间件与业务服务分层部署。
 - Nacos 使用独立持久化与备份策略。
-- RabbitMQ 增加 DLQ 与重试队列策略。
+- RabbitMQ 可靠队列（主队列/重试队列/DLQ）需在各环境保持一致参数。
 
 ## 13. 当前技术债与演进路线
 
 P0：
 
 - 密码哈希化与认证安全加固。
-- MQ 可靠投递与消费失败补偿机制。
+- MQ 可靠投递与消费失败补偿机制（重试与 DLQ）[已完成，2026-03-04]。
 - 网关之外的服务级权限校验补齐。
 
 P1：

@@ -19,6 +19,7 @@ import com.smart.exam.grading.model.GradingTaskStatus;
 import com.smart.exam.grading.model.QuestionScore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -72,11 +73,6 @@ public class GradingDomainService {
     }
 
     public void onExamSubmitted(ExamSubmittedEvent event) {
-        if (!acquireEventDedup(event.getEventId())) {
-            log.info("Skip duplicate exam submitted event: {}", event.getEventId());
-            return;
-        }
-
         Long sessionId = parseLong("sessionId", event.getSessionId());
         GradingTaskEntity existingTask = gradingTaskMapper.selectOne(
                 Wrappers.lambdaQuery(GradingTaskEntity.class)
@@ -84,36 +80,51 @@ public class GradingDomainService {
                         .last("limit 1")
         );
         if (existingTask != null) {
-            log.info("Skip duplicate task by sessionId, sessionId={}", event.getSessionId());
+            if (GradingTaskStatus.AUTO_DONE.name().equals(existingTask.getStatus())) {
+                log.warn("Existing AUTO_DONE task found, republish score, sessionId={}", event.getSessionId());
+                publishScore(existingTask);
+            } else {
+                log.info("Skip duplicate task by sessionId, sessionId={}", event.getSessionId());
+            }
             return;
         }
 
-        GradingTaskEntity taskEntity = new GradingTaskEntity();
-        taskEntity.setId(idGenerator.nextId());
-        taskEntity.setExamId(parseLong("examId", event.getExamId()));
-        taskEntity.setSessionId(sessionId);
-        taskEntity.setUserId(parseLong("userId", event.getUserId()));
-        taskEntity.setCreatedAt(LocalDateTime.now());
-        taskEntity.setUpdatedAt(LocalDateTime.now());
-
-        BigDecimal objectiveScore = calculateObjectiveScore(event.getSessionId());
-        taskEntity.setObjectiveScore(objectiveScore);
-
-        boolean manualRequired = Math.abs(event.getSessionId().hashCode()) % 2 == 0;
-        if (manualRequired) {
-            taskEntity.setStatus(GradingTaskStatus.MANUAL_REQUIRED.name());
-            taskEntity.setSubjectiveScore(BigDecimal.ZERO);
-            taskEntity.setTotalScore(objectiveScore);
-        } else {
-            taskEntity.setStatus(GradingTaskStatus.AUTO_DONE.name());
-            taskEntity.setSubjectiveScore(BigDecimal.ZERO);
-            taskEntity.setTotalScore(objectiveScore);
+        if (!acquireEventDedup(event.getEventId())) {
+            log.info("Skip duplicate exam submitted event: {}", event.getEventId());
+            return;
         }
 
-        gradingTaskMapper.insert(taskEntity);
+        try {
+            GradingTaskEntity taskEntity = new GradingTaskEntity();
+            taskEntity.setId(idGenerator.nextId());
+            taskEntity.setExamId(parseLong("examId", event.getExamId()));
+            taskEntity.setSessionId(sessionId);
+            taskEntity.setUserId(parseLong("userId", event.getUserId()));
+            taskEntity.setCreatedAt(LocalDateTime.now());
+            taskEntity.setUpdatedAt(LocalDateTime.now());
 
-        if (!manualRequired) {
-            publishScore(taskEntity);
+            BigDecimal objectiveScore = calculateObjectiveScore(event.getSessionId());
+            taskEntity.setObjectiveScore(objectiveScore);
+
+            boolean manualRequired = Math.abs(event.getSessionId().hashCode()) % 2 == 0;
+            if (manualRequired) {
+                taskEntity.setStatus(GradingTaskStatus.MANUAL_REQUIRED.name());
+                taskEntity.setSubjectiveScore(BigDecimal.ZERO);
+                taskEntity.setTotalScore(objectiveScore);
+            } else {
+                taskEntity.setStatus(GradingTaskStatus.AUTO_DONE.name());
+                taskEntity.setSubjectiveScore(BigDecimal.ZERO);
+                taskEntity.setTotalScore(objectiveScore);
+            }
+
+            gradingTaskMapper.insert(taskEntity);
+
+            if (!manualRequired) {
+                publishScore(taskEntity);
+            }
+        } catch (RuntimeException ex) {
+            releaseEventDedup(event.getEventId());
+            throw ex;
         }
     }
 
@@ -219,7 +230,12 @@ public class GradingDomainService {
         event.setUserId(String.valueOf(taskEntity.getUserId()));
         event.setTotalScore(taskEntity.getTotalScore().doubleValue());
         event.setPublishedAt(OffsetDateTime.now());
-        rabbitTemplate.convertAndSend(RabbitConfig.EXAM_EXCHANGE, RabbitConfig.SCORE_PUBLISHED_ROUTING_KEY, event);
+        rabbitTemplate.convertAndSend(
+                RabbitConfig.EXAM_EXCHANGE,
+                RabbitConfig.SCORE_PUBLISHED_ROUTING_KEY,
+                event,
+                new CorrelationData(event.getEventId())
+        );
     }
 
     private GradingTask toTask(GradingTaskEntity taskEntity, List<QuestionScoreEntity> scoreEntities) {
@@ -279,6 +295,14 @@ public class GradingDomainService {
         } catch (Exception ex) {
             log.warn("Event dedup unavailable, fallback to DB uniqueness check", ex);
             return true;
+        }
+    }
+
+    private void releaseEventDedup(String eventId) {
+        try {
+            redisTemplate.delete(EVENT_DEDUP_PREFIX + eventId);
+        } catch (Exception ex) {
+            log.warn("Event dedup release failed, eventId={}", eventId, ex);
         }
     }
 

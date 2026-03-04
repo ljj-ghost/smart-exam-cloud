@@ -39,6 +39,15 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        default-requeue-rejected: false
+        prefetch: 20
 
 mybatis-plus:
   configuration:
@@ -49,6 +58,12 @@ mybatis-plus:
 snowflake:
   worker-id: 4
   datacenter-id: 1
+
+smart-exam:
+  mq:
+    exam-submitted:
+      max-retries: 3
+      retry-ttl-ms: 10000
 
 management:
   endpoints:

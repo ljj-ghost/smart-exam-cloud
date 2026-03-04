@@ -169,26 +169,46 @@ curl http://localhost:9000/api/v1/users/me \
   -H "Authorization: Bearer <token>"
 ```
 
-## 11. 常见问题
+### 10.3 MQ 可靠性联调检查
 
-### 11.1 服务启动后连不上 Nacos
+当前 `exam-service -> grading-service -> analysis-service` 的异步链路已启用以下机制：
+
+- 发布确认：`publisher-confirm-type=correlated` + `publisher-returns=true`
+- 消费确认：`acknowledge-mode=manual`
+- 失败重试：主队列失败后进入 `retry` 队列，TTL 到期后回流主队列
+- 最终死信：超过重试上限后转入 `dlq` 队列
+
+可在 RabbitMQ 管理台（`http://localhost:15672`）重点观察：
+
+- `exam.submitted.q` / `exam.submitted.retry.q` / `exam.submitted.dlq.q`
+- `score.published.q` / `score.published.retry.q` / `score.published.dlq.q`
+
+## 12. 常见问题
+
+### 12.1 服务启动后连不上 Nacos
 
 - 检查 Nacos 是否启动：`docker compose ps nacos`
 - 检查端口是否开放：`8848`、`9848`、`9849`
 - 检查 `NACOS_SERVER_ADDR` 是否和当前环境一致
 
-### 11.2 数据库脚本没有自动执行
+### 12.2 数据库脚本没有自动执行
 
 - 当前 compose 未挂载初始化目录，属于预期行为
 - 按第 5 节手动执行 SQL
 
-### 11.3 网关 404 或路由不到下游服务
+### 12.3 网关 404 或路由不到下游服务
 
 - 确认下游服务已注册到 Nacos
 - 确认 Nacos 中已导入 `gateway-service.yaml`
 - 确认访问路径包含 `/api/v1/...`
 
-## 12. 常用命令
+### 12.4 RabbitMQ 报 PRECONDITION_FAILED（队列参数不一致）
+
+- 通常是你在引入重试/DLQ 前已创建过同名队列（无 DLX 参数）
+- 本地可执行 `docker compose down -v` 清理数据卷后重启中间件
+- 然后按第 5 节重建数据库，再重新启动服务
+
+## 13. 常用命令
 
 ```bash
 # 停止中间件（保留数据）
@@ -202,7 +222,7 @@ docker compose logs -f nacos
 docker compose logs -f mysql
 ```
 
-## 13. 需求与架构文档索引
+## 14. 需求与架构文档索引
 
 为避免文档重复维护，本文件只保留开发与联调步骤。
 业务需求与技术架构请直接查看以下文档：

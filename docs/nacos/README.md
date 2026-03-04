@@ -31,7 +31,38 @@ Open `http://192.168.242.10:8848/nacos`, then create these Data IDs in `DEFAULT_
 
 Use files from this folder as content templates.
 
-## 2. Optional CLI Import (Linux/macOS/Git Bash)
+## 2. Script Import (Recommended)
+
+### 2.1 Windows PowerShell
+
+```powershell
+.\docs\nacos\import-nacos.ps1 `
+  -NacosAddr "http://127.0.0.1:8848" `
+  -Group "DEFAULT_GROUP" `
+  -Username "nacos" `
+  -Password "nacos"
+```
+
+If you use namespace, add:
+
+```powershell
+-Namespace "<your-namespace-id>"
+```
+
+### 2.2 Linux/macOS/Git Bash
+
+```bash
+chmod +x docs/nacos/import-nacos.sh
+NACOS_ADDR="http://127.0.0.1:8848" \
+NACOS_GROUP="DEFAULT_GROUP" \
+NACOS_USERNAME="nacos" \
+NACOS_PASSWORD="nacos" \
+./docs/nacos/import-nacos.sh
+```
+
+If you use namespace, set `NACOS_NAMESPACE=<your-namespace-id>`.
+
+## 3. Optional Manual CLI Import
 
 ```bash
 NACOS_ADDR="http://192.168.242.10:8848"
@@ -45,7 +76,7 @@ for f in common.yaml gateway-service.yaml auth-service.yaml user-service.yaml qu
 done
 ```
 
-## 3. Runtime Environment Variables
+## 4. Runtime Environment Variables
 
 If your Nacos address/account changes, set these before starting services:
 
@@ -54,3 +85,16 @@ If your Nacos address/account changes, set these before starting services:
 - `NACOS_PASSWORD`
 - `NACOS_GROUP`
 - `NACOS_NAMESPACE`
+
+## 5. MQ Reliability Config Keys
+
+`common.yaml` now includes RabbitMQ reliability defaults used by exam/grading/analysis services:
+
+- `spring.rabbitmq.publisher-confirm-type=correlated`
+- `spring.rabbitmq.publisher-returns=true`
+- `spring.rabbitmq.template.mandatory=true`
+- `spring.rabbitmq.listener.simple.acknowledge-mode=manual`
+- `smart-exam.mq.exam-submitted.max-retries`
+- `smart-exam.mq.exam-submitted.retry-ttl-ms`
+- `smart-exam.mq.score-published.max-retries`
+- `smart-exam.mq.score-published.retry-ttl-ms`

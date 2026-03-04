@@ -11,6 +11,24 @@ spring:
     port: 5672
     username: guest
     password: guest
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        default-requeue-rejected: false
+        prefetch: 20
+
+smart-exam:
+  mq:
+    exam-submitted:
+      max-retries: 3
+      retry-ttl-ms: 10000
+    score-published:
+      max-retries: 3
+      retry-ttl-ms: 10000
 
 security:
   jwt:
@@ -22,4 +40,3 @@ management:
     web:
       exposure:
         include: health,info
-

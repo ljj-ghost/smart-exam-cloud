@@ -22,6 +22,7 @@ import com.smart.exam.exam.model.ExamStatus;
 import com.smart.exam.exam.model.SessionStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -277,7 +278,12 @@ public class ExamDomainService {
             return;
         }
         try {
-            rabbitTemplate.convertAndSend(RabbitConfig.EXAM_EXCHANGE, RabbitConfig.EXAM_SUBMITTED_ROUTING_KEY, event);
+            rabbitTemplate.convertAndSend(
+                    RabbitConfig.EXAM_EXCHANGE,
+                    RabbitConfig.EXAM_SUBMITTED_ROUTING_KEY,
+                    event,
+                    new CorrelationData(event.getEventId())
+            );
         } catch (Exception ex) {
             log.error("Publish exam.submitted failed: {}", ex.getMessage(), ex);
         }
