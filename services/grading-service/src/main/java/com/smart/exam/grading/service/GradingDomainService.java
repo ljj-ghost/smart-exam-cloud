@@ -93,6 +93,7 @@ public class GradingDomainService {
         this.objectMapper = objectMapper;
     }
 
+    @Transactional
     public void onExamSubmitted(ExamSubmittedEvent event) {
         Long sessionId = parseLong("sessionId", event.getSessionId());
         GradingTaskEntity existingTask = gradingTaskMapper.selectOne(
@@ -105,15 +106,27 @@ public class GradingDomainService {
                     || GradingTaskStatus.DONE.name().equals(existingTask.getStatus())) {
                 log.warn("Existing finished task found, republish score, sessionId={}", event.getSessionId());
                 publishScore(existingTask);
+                return;
             } else {
-                log.info("Skip duplicate task by sessionId, sessionId={}", event.getSessionId());
+                if (isTaskScoreComplete(existingTask)) {
+                    log.info("Skip duplicate task by sessionId, sessionId={}", event.getSessionId());
+                    return;
+                }
+                log.warn("Detected incomplete task, rebuild by sessionId, taskId={}, sessionId={}",
+                        existingTask.getId(),
+                        event.getSessionId());
+                questionScoreMapper.delete(
+                        Wrappers.lambdaQuery(QuestionScoreEntity.class)
+                                .eq(QuestionScoreEntity::getTaskId, existingTask.getId())
+                );
+                gradingTaskMapper.deleteById(existingTask.getId());
             }
-            return;
         }
 
-        if (!acquireEventDedup(event.getEventId())) {
-            log.info("Skip duplicate exam submitted event: {}", event.getEventId());
-            return;
+        boolean eventDedupAcquired = acquireEventDedup(event.getEventId());
+        if (!eventDedupAcquired) {
+            log.info("Event dedup key already exists, fallback to DB consistency checks, eventId={}",
+                    event.getEventId());
         }
 
         try {
@@ -143,32 +156,34 @@ public class GradingDomainService {
                 publishScore(taskEntity, scoringResult.questionScores());
             }
         } catch (RuntimeException ex) {
-            releaseEventDedup(event.getEventId());
+            if (eventDedupAcquired) {
+                releaseEventDedup(event.getEventId());
+            }
             throw ex;
         }
     }
 
-    public Collection<GradingTask> listTasks(String status) {
+    public Collection<GradingTask> listTasks(String status, String operatorId, String role) {
+        String normalizedStatus = normalizeTaskStatus(status);
         List<GradingTaskEntity> taskEntities;
-        if (!StringUtils.hasText(status)) {
-            taskEntities = gradingTaskMapper.selectList(
-                    Wrappers.lambdaQuery(GradingTaskEntity.class)
-                            .orderByDesc(GradingTaskEntity::getCreatedAt)
-                            .orderByDesc(GradingTaskEntity::getId)
-            );
-        } else {
-            GradingTaskStatus taskStatus;
-            try {
-                taskStatus = GradingTaskStatus.valueOf(status);
-            } catch (IllegalArgumentException ex) {
-                throw new BizException(ErrorCode.BAD_REQUEST, "Invalid task status: " + status);
+        if (isAdminRole(role)) {
+            if (!StringUtils.hasText(normalizedStatus)) {
+                taskEntities = gradingTaskMapper.selectList(
+                        Wrappers.lambdaQuery(GradingTaskEntity.class)
+                                .orderByDesc(GradingTaskEntity::getCreatedAt)
+                                .orderByDesc(GradingTaskEntity::getId)
+                );
+            } else {
+                taskEntities = gradingTaskMapper.selectList(
+                        Wrappers.lambdaQuery(GradingTaskEntity.class)
+                                .eq(GradingTaskEntity::getStatus, normalizedStatus)
+                                .orderByDesc(GradingTaskEntity::getCreatedAt)
+                                .orderByDesc(GradingTaskEntity::getId)
+                );
             }
-            taskEntities = gradingTaskMapper.selectList(
-                    Wrappers.lambdaQuery(GradingTaskEntity.class)
-                            .eq(GradingTaskEntity::getStatus, taskStatus.name())
-                            .orderByDesc(GradingTaskEntity::getCreatedAt)
-                            .orderByDesc(GradingTaskEntity::getId)
-            );
+        } else {
+            Long teacherId = parseLong("teacherId", operatorId);
+            taskEntities = gradingTaskMapper.selectTeacherTasks(teacherId, normalizedStatus);
         }
 
         if (taskEntities.isEmpty()) {
@@ -188,7 +203,7 @@ public class GradingDomainService {
     }
 
     @Transactional
-    public GradingTask manualScore(String taskId, ManualScoreRequest request, String graderId) {
+    public GradingTask manualScore(String taskId, ManualScoreRequest request, String graderId, String role) {
         protectDuplicateManualScore(taskId, graderId, request);
 
         Long taskLongId = parseLong("taskId", taskId);
@@ -196,6 +211,7 @@ public class GradingDomainService {
         if (taskEntity == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "Grading task not found");
         }
+        ensureTaskAccessible(taskEntity, graderId, role);
         if (!GradingTaskStatus.MANUAL_REQUIRED.name().equals(taskEntity.getStatus())) {
             throw new BizException(ErrorCode.BAD_REQUEST, "Task is not in manual scoring state");
         }
@@ -344,6 +360,24 @@ public class GradingDomainService {
 
     private boolean isObjectiveType(String questionType) {
         return OBJECTIVE_TYPES.contains(normalizeToken(questionType));
+    }
+
+    private boolean isTaskScoreComplete(GradingTaskEntity taskEntity) {
+        if (taskEntity == null || taskEntity.getId() == null || taskEntity.getExamId() == null) {
+            return false;
+        }
+        ExamSnapshot examSnapshot = examReadMapper.selectExamById(taskEntity.getExamId());
+        if (examSnapshot == null || examSnapshot.getPaperId() == null) {
+            return false;
+        }
+        long expectedCount = questionReadMapper
+                .selectPaperQuestionsByPaperId(examSnapshot.getPaperId())
+                .size();
+        Long actualCount = questionScoreMapper.selectCount(
+                Wrappers.lambdaQuery(QuestionScoreEntity.class)
+                        .eq(QuestionScoreEntity::getTaskId, taskEntity.getId())
+        );
+        return (actualCount == null ? 0L : actualCount) == expectedCount;
     }
 
     private boolean isObjectiveAnswerCorrect(QuestionSnapshot question, JsonNode answerNode) {
@@ -537,6 +571,35 @@ public class GradingDomainService {
         if (expectedQuestionIds.size() != submittedQuestionIds.size()
                 || !expectedQuestionIds.containsAll(submittedQuestionIds)) {
             throw new BizException(ErrorCode.BAD_REQUEST, "Manual scores must cover all subjective questions");
+        }
+    }
+
+    private String normalizeTaskStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return null;
+        }
+        try {
+            return GradingTaskStatus.valueOf(status.trim().toUpperCase(Locale.ROOT)).name();
+        } catch (IllegalArgumentException ex) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Invalid task status: " + status);
+        }
+    }
+
+    private boolean isAdminRole(String role) {
+        return "ADMIN".equalsIgnoreCase(String.valueOf(role).trim());
+    }
+
+    private void ensureTaskAccessible(GradingTaskEntity taskEntity, String graderId, String role) {
+        if (isAdminRole(role)) {
+            return;
+        }
+        Long examOwnerId = examReadMapper.selectExamOwnerById(taskEntity.getExamId());
+        if (examOwnerId == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Exam not found");
+        }
+        long teacherId = parseLong("graderId", graderId);
+        if (!examOwnerId.equals(teacherId)) {
+            throw new BizException(ErrorCode.FORBIDDEN, "Grading task does not belong to current teacher");
         }
     }
 

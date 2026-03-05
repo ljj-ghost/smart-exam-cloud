@@ -122,3 +122,22 @@ If your Nacos address/account changes, set these before starting services:
 - `smart-exam.exam.anti-cheat.high-threshold`
 - `smart-exam.exam.anti-cheat.critical-threshold`
 - `smart-exam.exam.anti-cheat.event-base-scores.*`
+
+## 8. Gateway Route Notes
+
+`gateway-service.yaml` exam route includes:
+
+- `/api/v1/exams/**`
+- `/api/v1/sessions/**`
+- `/api/v1/students/**` (legacy student list compatibility path)
+
+If student clients still use `/api/v1/students/me/exams`, keep this route entry.
+
+## 9. Report Feature Notes
+
+`analysis-service` score sheet API:
+
+- `GET /api/v1/reports/exams/{examId}/score-sheet`
+
+No extra Nacos key is required for this API.
+It reuses existing report cache/reliability settings from `common.yaml`.

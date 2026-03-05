@@ -1,7 +1,10 @@
 package com.smart.exam.exam.model;
 
+import jakarta.validation.constraints.NotBlank;
+
 public class AnswerItem {
 
+    @NotBlank
     private String questionId;
     private Object answerContent;
     private Boolean markedForReview;
@@ -30,4 +33,3 @@ public class AnswerItem {
         this.markedForReview = markedForReview;
     }
 }
-

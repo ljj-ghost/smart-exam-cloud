@@ -2,6 +2,7 @@ package com.smart.exam.question.dto;
 
 import com.smart.exam.question.model.QuestionOption;
 import com.smart.exam.question.model.QuestionType;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -17,6 +18,7 @@ public class CreateQuestionRequest {
     @NotBlank
     private String stem;
 
+    @Valid
     private List<QuestionOption> options;
 
     @NotBlank
@@ -86,4 +88,3 @@ public class CreateQuestionRequest {
         this.analysis = analysis;
     }
 }
-

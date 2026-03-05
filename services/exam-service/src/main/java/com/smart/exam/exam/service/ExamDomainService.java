@@ -2,6 +2,7 @@ package com.smart.exam.exam.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smart.exam.common.core.error.BizException;
 import com.smart.exam.common.core.error.ErrorCode;
@@ -15,24 +16,35 @@ import com.smart.exam.exam.dto.SaveAnswersRequest;
 import com.smart.exam.exam.entity.AnswerEntity;
 import com.smart.exam.exam.entity.ExamEntity;
 import com.smart.exam.exam.entity.ExamSessionEntity;
+import com.smart.exam.exam.entity.ExamTargetEntity;
 import com.smart.exam.exam.entity.SessionRiskEventEntity;
 import com.smart.exam.exam.entity.SessionRiskSummaryEntity;
 import com.smart.exam.exam.mapper.AnswerMapper;
 import com.smart.exam.exam.mapper.ExamMapper;
 import com.smart.exam.exam.mapper.ExamSessionMapper;
+import com.smart.exam.exam.mapper.ExamTargetMapper;
+import com.smart.exam.exam.mapper.QuestionReadMapper;
 import com.smart.exam.exam.mapper.SessionRiskEventMapper;
 import com.smart.exam.exam.mapper.SessionRiskSummaryMapper;
+import com.smart.exam.exam.mapper.UserReadMapper;
 import com.smart.exam.exam.model.AntiCheatRiskEvent;
 import com.smart.exam.exam.model.AntiCheatRiskSummary;
+import com.smart.exam.exam.model.AssignedExam;
 import com.smart.exam.exam.model.AnswerItem;
 import com.smart.exam.exam.model.Exam;
+import com.smart.exam.exam.model.ExamPaper;
+import com.smart.exam.exam.model.ExamPaperOption;
+import com.smart.exam.exam.model.ExamPaperQuestion;
 import com.smart.exam.exam.model.ExamStatus;
 import com.smart.exam.exam.model.SessionStatus;
+import com.smart.exam.exam.model.read.PaperQuestionSnapshot;
+import com.smart.exam.exam.model.read.PaperSnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,12 +56,18 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Comparator;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -57,17 +75,23 @@ public class ExamDomainService {
 
     private static final Logger log = LoggerFactory.getLogger(ExamDomainService.class);
     private static final Duration SUBMIT_LOCK_TTL = Duration.ofSeconds(30);
+    private static final Duration START_LOCK_TTL = Duration.ofSeconds(8);
     private static final Duration EXAM_CACHE_TTL = Duration.ofMinutes(15);
     private static final Duration CREATE_EXAM_DEDUP_TTL = Duration.ofSeconds(5);
     private static final String SUBMIT_LOCK_PREFIX = "exam:submit:lock:";
+    private static final String START_LOCK_PREFIX = "exam:start:lock:";
     private static final String EXAM_CACHE_PREFIX = "exam:detail:";
     private static final String CREATE_EXAM_DEDUP_PREFIX = "exam:create:dedup:";
+    private static final String ANSWER_SPLIT_REGEX = "[,\\uFF0C\\s]+";
 
     private final SnowflakeIdGenerator idGenerator;
     private final RabbitTemplate rabbitTemplate;
     private final ExamMapper examMapper;
+    private final ExamTargetMapper examTargetMapper;
     private final ExamSessionMapper examSessionMapper;
     private final AnswerMapper answerMapper;
+    private final QuestionReadMapper questionReadMapper;
+    private final UserReadMapper userReadMapper;
     private final SessionRiskEventMapper sessionRiskEventMapper;
     private final SessionRiskSummaryMapper sessionRiskSummaryMapper;
     private final AntiCheatRuleEngine antiCheatRuleEngine;
@@ -78,8 +102,11 @@ public class ExamDomainService {
     public ExamDomainService(SnowflakeIdGenerator idGenerator,
                              ObjectProvider<RabbitTemplate> rabbitTemplateProvider,
                              ExamMapper examMapper,
+                             ExamTargetMapper examTargetMapper,
                              ExamSessionMapper examSessionMapper,
                              AnswerMapper answerMapper,
+                             QuestionReadMapper questionReadMapper,
+                             UserReadMapper userReadMapper,
                              SessionRiskEventMapper sessionRiskEventMapper,
                              SessionRiskSummaryMapper sessionRiskSummaryMapper,
                              AntiCheatRuleEngine antiCheatRuleEngine,
@@ -89,8 +116,11 @@ public class ExamDomainService {
         this.idGenerator = idGenerator;
         this.rabbitTemplate = rabbitTemplateProvider.getIfAvailable();
         this.examMapper = examMapper;
+        this.examTargetMapper = examTargetMapper;
         this.examSessionMapper = examSessionMapper;
         this.answerMapper = answerMapper;
+        this.questionReadMapper = questionReadMapper;
+        this.userReadMapper = userReadMapper;
         this.sessionRiskEventMapper = sessionRiskEventMapper;
         this.sessionRiskSummaryMapper = sessionRiskSummaryMapper;
         this.antiCheatRuleEngine = antiCheatRuleEngine;
@@ -99,17 +129,30 @@ public class ExamDomainService {
         this.objectMapper = objectMapper;
     }
 
-    public Exam createExam(CreateExamRequest request, String userId) {
+    @Transactional
+    public Exam createExam(CreateExamRequest request, String userId, String role) {
         protectDuplicateCreate(userId, request);
 
         if (!request.getStartTime().isBefore(request.getEndTime())) {
             throw new BizException(ErrorCode.BAD_REQUEST, "startTime must be before endTime");
         }
 
+        long paperId = parseLong("paperId", request.getPaperId());
+        boolean adminRole = "ADMIN".equalsIgnoreCase(String.valueOf(role).trim());
+        PaperSnapshot ownedPaper = adminRole
+                ? questionReadMapper.selectPaperById(paperId)
+                : questionReadMapper.selectPaperByIdAndCreatedBy(paperId, parseLong("userId", userId));
+        if (ownedPaper == null) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Paper not found: " + request.getPaperId());
+        }
+
+        LinkedHashSet<Long> targetStudentIds = parseTargetStudentIds(request.getStudentIds());
+        validateTargetStudents(targetStudentIds);
+
         ExamEntity entity = new ExamEntity();
         entity.setId(idGenerator.nextId());
-        entity.setPaperId(parseLong("paperId", request.getPaperId()));
-        entity.setTitle(request.getTitle());
+        entity.setPaperId(paperId);
+        entity.setTitle(request.getTitle().trim());
         entity.setStartTime(request.getStartTime());
         entity.setEndTime(request.getEndTime());
         entity.setAntiCheatLevel(request.getAntiCheatLevel());
@@ -117,47 +160,59 @@ public class ExamDomainService {
         entity.setCreatedBy(parseLong("createdBy", userId));
         examMapper.insert(entity);
 
+        batchInsertExamTargets(entity.getId(), parseLong("createdBy", userId), targetStudentIds);
+
         Exam exam = toExam(entity);
+        exam.setTargetStudentCount(targetStudentIds.size());
+        exam.setStudentIds(targetStudentIds.stream().map(String::valueOf).toList());
         putExamCache(exam);
         return exam;
     }
 
     @Transactional
-    public Map<String, Object> startExam(String examId, String userId, String ip) {
+    public Map<String, Object> startExam(String examId, String userId, String role, String ip) {
         Exam exam = getExam(examId);
         LocalDateTime now = LocalDateTime.now();
-        if (now.isBefore(exam.getStartTime()) || now.isAfter(exam.getEndTime())) {
+        if (now.isBefore(exam.getStartTime()) || !now.isBefore(exam.getEndTime())) {
             throw new BizException(ErrorCode.BAD_REQUEST, "Exam is not in active window");
         }
 
         long examLongId = parseLong("examId", examId);
         long userLongId = parseLong("userId", userId);
-
-        ExamSessionEntity activeSession = examSessionMapper.selectOne(
-                Wrappers.lambdaQuery(ExamSessionEntity.class)
-                        .eq(ExamSessionEntity::getExamId, examLongId)
-                        .eq(ExamSessionEntity::getUserId, userLongId)
-                        .eq(ExamSessionEntity::getStatus, SessionStatus.IN_PROGRESS.name())
-                        .orderByDesc(ExamSessionEntity::getId)
-                        .last("limit 1")
-        );
-
-        ExamSessionEntity sessionEntity;
-        if (activeSession != null) {
-            sessionEntity = activeSession;
-        } else {
-            sessionEntity = new ExamSessionEntity();
-            sessionEntity.setId(idGenerator.nextId());
-            sessionEntity.setExamId(examLongId);
-            sessionEntity.setUserId(userLongId);
-            sessionEntity.setStartTime(now);
-            sessionEntity.setSubmitTime(null);
-            sessionEntity.setStatus(SessionStatus.IN_PROGRESS.name());
-            sessionEntity.setIpAtStart(ip);
-            sessionEntity.setSwitchScreenCount(0);
-            sessionEntity.setLastSaveTime(now);
-            examSessionMapper.insert(sessionEntity);
+        boolean adminRole = "ADMIN".equalsIgnoreCase(String.valueOf(role).trim());
+        if (!adminRole) {
+            boolean assigned = examTargetMapper.selectCount(
+                    Wrappers.lambdaQuery(ExamTargetEntity.class)
+                            .eq(ExamTargetEntity::getExamId, examLongId)
+                            .eq(ExamTargetEntity::getStudentId, userLongId)
+            ) > 0;
+            if (!assigned) {
+                throw new BizException(ErrorCode.FORBIDDEN, "Exam is not assigned to current student");
+            }
         }
+
+        String startLockKey = START_LOCK_PREFIX + examLongId + ":" + userLongId;
+        if (!acquireSimpleLock(startLockKey, START_LOCK_TTL)) {
+            throw new BizException(ErrorCode.CONFLICT, "Duplicate start request");
+        }
+        ExamSessionEntity sessionEntity;
+        try {
+            sessionEntity = findLatestSession(examLongId, userLongId);
+            if (sessionEntity == null) {
+                sessionEntity = buildNewSession(examLongId, userLongId, now, ip);
+                try {
+                    examSessionMapper.insert(sessionEntity);
+                } catch (DuplicateKeyException ex) {
+                    sessionEntity = findLatestSession(examLongId, userLongId);
+                    if (sessionEntity == null) {
+                        throw new BizException(ErrorCode.CONFLICT, "Failed to create session, please retry");
+                    }
+                }
+            }
+        } finally {
+            releaseSimpleLock(startLockKey);
+        }
+        validateSessionStartable(sessionEntity);
 
         long timeLimitSeconds = Math.max(1, Duration.between(now, exam.getEndTime()).toSeconds());
         Map<String, Object> payload = new HashMap<>();
@@ -167,20 +222,202 @@ public class ExamDomainService {
         return payload;
     }
 
+    public List<AssignedExam> listAssignedExams(String userId, String role) {
+        long studentId = parseLong("studentId", userId);
+        boolean adminRole = "ADMIN".equalsIgnoreCase(String.valueOf(role).trim());
+        List<ExamEntity> exams;
+        if (adminRole) {
+            exams = examMapper.selectList(
+                    Wrappers.lambdaQuery(ExamEntity.class)
+                            .orderByDesc(ExamEntity::getStartTime)
+                            .last("limit 100")
+            );
+        } else {
+            List<ExamTargetEntity> targets = examTargetMapper.selectList(
+                    Wrappers.lambdaQuery(ExamTargetEntity.class)
+                            .eq(ExamTargetEntity::getStudentId, studentId)
+                            .orderByDesc(ExamTargetEntity::getAssignedAt)
+            );
+            if (targets.isEmpty()) {
+                return List.of();
+            }
+            LinkedHashSet<Long> examIds = new LinkedHashSet<>();
+            for (ExamTargetEntity target : targets) {
+                if (target.getExamId() != null) {
+                    examIds.add(target.getExamId());
+                }
+            }
+            if (examIds.isEmpty()) {
+                return List.of();
+            }
+            exams = examMapper.selectBatchIds(examIds);
+        }
+
+        if (exams == null || exams.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, ExamEntity> examMap = new HashMap<>();
+        LocalDateTime now = LocalDateTime.now();
+        for (ExamEntity exam : exams) {
+            if (exam == null || exam.getId() == null) {
+                continue;
+            }
+            syncExamStatusIfNeeded(exam, now);
+            examMap.put(exam.getId(), exam);
+        }
+        if (examMap.isEmpty()) {
+            return List.of();
+        }
+
+        Set<Long> examIds = examMap.keySet();
+        List<ExamSessionEntity> sessions = examSessionMapper.selectList(
+                Wrappers.lambdaQuery(ExamSessionEntity.class)
+                        .eq(ExamSessionEntity::getUserId, studentId)
+                        .in(ExamSessionEntity::getExamId, examIds)
+                        .orderByDesc(ExamSessionEntity::getId)
+        );
+        Map<Long, ExamSessionEntity> latestSessionByExamId = new HashMap<>();
+        for (ExamSessionEntity session : sessions) {
+            if (session == null || session.getExamId() == null) {
+                continue;
+            }
+            latestSessionByExamId.putIfAbsent(session.getExamId(), session);
+        }
+
+        List<AssignedExam> result = new ArrayList<>(examMap.size());
+        for (ExamEntity exam : examMap.values()) {
+            result.add(toAssignedExam(exam, latestSessionByExamId.get(exam.getId())));
+        }
+        result.sort(
+                Comparator.comparing(AssignedExam::getStartTime, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(AssignedExam::getExamId, Comparator.nullsLast(Comparator.reverseOrder()))
+        );
+        return result;
+    }
+
+    public List<Exam> listPublishedExams(String userId, String role) {
+        boolean adminRole = "ADMIN".equalsIgnoreCase(String.valueOf(role).trim());
+        var query = Wrappers.lambdaQuery(ExamEntity.class);
+        if (!adminRole) {
+            query.eq(ExamEntity::getCreatedBy, parseLong("userId", userId));
+        }
+        query.orderByDesc(ExamEntity::getStartTime)
+                .orderByDesc(ExamEntity::getId)
+                .last("limit 200");
+
+        List<ExamEntity> exams = examMapper.selectList(query);
+        if (exams == null || exams.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, ExamEntity> examMap = new HashMap<>();
+        LocalDateTime now = LocalDateTime.now();
+        for (ExamEntity exam : exams) {
+            if (exam == null || exam.getId() == null) {
+                continue;
+            }
+            syncExamStatusIfNeeded(exam, now);
+            examMap.put(exam.getId(), exam);
+        }
+        if (examMap.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, Integer> targetCountMap = new HashMap<>();
+        List<ExamTargetEntity> targets = examTargetMapper.selectList(
+                Wrappers.lambdaQuery(ExamTargetEntity.class)
+                        .in(ExamTargetEntity::getExamId, examMap.keySet())
+        );
+        for (ExamTargetEntity target : targets) {
+            if (target == null || target.getExamId() == null) {
+                continue;
+            }
+            targetCountMap.merge(target.getExamId(), 1, Integer::sum);
+        }
+
+        List<Exam> result = new ArrayList<>(examMap.size());
+        for (ExamEntity exam : examMap.values()) {
+            Exam payload = toExam(exam);
+            payload.setTargetStudentCount(targetCountMap.getOrDefault(exam.getId(), 0));
+            result.add(payload);
+        }
+        result.sort(
+                Comparator.comparing(Exam::getStartTime, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(Exam::getId, Comparator.nullsLast(Comparator.reverseOrder()))
+        );
+        return result;
+    }
+
+    public ExamPaper getSessionPaper(String sessionId, String userId) {
+        long sessionLongId = parseLong("sessionId", sessionId);
+        ExamSessionEntity session = getSessionEntity(sessionLongId);
+        validateSessionOwner(session, userId);
+
+        ExamEntity exam = examMapper.selectById(session.getExamId());
+        if (exam == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Exam not found");
+        }
+
+        PaperSnapshot paperSnapshot = questionReadMapper.selectPaperById(exam.getPaperId());
+        if (paperSnapshot == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Paper not found");
+        }
+
+        List<PaperQuestionSnapshot> questionSnapshots =
+                questionReadMapper.selectPaperQuestionsByPaperId(exam.getPaperId());
+        if (questionSnapshots.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Paper contains no questions");
+        }
+
+        ExamPaper paper = new ExamPaper();
+        paper.setSessionId(String.valueOf(session.getId()));
+        paper.setExamId(String.valueOf(exam.getId()));
+        paper.setPaperId(String.valueOf(paperSnapshot.getId()));
+        paper.setPaperName(paperSnapshot.getName());
+        paper.setTotalScore(paperSnapshot.getTotalScore());
+        paper.setTimeLimitMinutes(paperSnapshot.getTimeLimitMinutes());
+        paper.setQuestions(questionSnapshots.stream().map(this::toExamPaperQuestion).toList());
+        return paper;
+    }
+
     @Transactional
     public void saveAnswers(String sessionId, SaveAnswersRequest request, String userId) {
         long sessionLongId = parseLong("sessionId", sessionId);
         ExamSessionEntity session = getSessionEntity(sessionLongId);
 
-        if (!String.valueOf(session.getUserId()).equals(userId)) {
-            throw new BizException(ErrorCode.FORBIDDEN, "Session does not belong to current user");
-        }
+        validateSessionOwner(session, userId);
         if (!SessionStatus.IN_PROGRESS.name().equals(session.getStatus())) {
             throw new BizException(ErrorCode.BAD_REQUEST, "Session is not editable");
         }
 
+        ExamEntity exam = examMapper.selectById(session.getExamId());
+        if (exam == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Exam not found");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (!now.isBefore(exam.getEndTime())) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Exam has ended, answer saving is disabled");
+        }
+
+        Map<Long, PaperQuestionSnapshot> paperQuestionMap = loadPaperQuestionMap(exam.getPaperId());
+        Set<Long> answeredQuestionIds = new HashSet<>();
+
         for (AnswerItem item : request.getAnswers()) {
+            if (item == null) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "Answer item cannot be null");
+            }
             long questionLongId = parseLong("questionId", item.getQuestionId());
+            if (!answeredQuestionIds.add(questionLongId)) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "Duplicate questionId in request: " + questionLongId);
+            }
+
+            PaperQuestionSnapshot paperQuestion = paperQuestionMap.get(questionLongId);
+            if (paperQuestion == null) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "Question does not belong to current paper: " + questionLongId);
+            }
+            Object normalizedAnswer = normalizeAnswerContent(paperQuestion.getType(), item.getAnswerContent());
+
             AnswerEntity entity = answerMapper.selectOne(
                     Wrappers.lambdaQuery(AnswerEntity.class)
                             .eq(AnswerEntity::getSessionId, sessionLongId)
@@ -192,18 +429,18 @@ public class ExamDomainService {
                 entity = new AnswerEntity();
                 entity.setSessionId(sessionLongId);
                 entity.setQuestionId(questionLongId);
-                entity.setAnswerContent(writeAsJson(item.getAnswerContent()));
+                entity.setAnswerContent(writeAsJson(normalizedAnswer));
                 entity.setIsMarkedForReview(Boolean.TRUE.equals(item.getMarkedForReview()) ? 1 : 0);
                 answerMapper.insert(entity);
             } else {
-                entity.setAnswerContent(writeAsJson(item.getAnswerContent()));
+                entity.setAnswerContent(writeAsJson(normalizedAnswer));
                 entity.setIsMarkedForReview(Boolean.TRUE.equals(item.getMarkedForReview()) ? 1 : 0);
                 entity.setUpdatedAt(LocalDateTime.now());
                 answerMapper.updateById(entity);
             }
         }
 
-        session.setLastSaveTime(LocalDateTime.now());
+        session.setLastSaveTime(now);
         examSessionMapper.updateById(session);
     }
 
@@ -223,8 +460,17 @@ public class ExamDomainService {
             throw new BizException(ErrorCode.CONFLICT, "Session already submitted");
         }
 
+        ExamEntity exam = examMapper.selectById(session.getExamId());
+        if (exam == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Exam not found");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        boolean deadlineExceeded = !now.isBefore(exam.getEndTime());
+        LocalDateTime effectiveSubmitTime = deadlineExceeded ? exam.getEndTime() : now;
+
         session.setStatus(SessionStatus.SUBMITTED.name());
-        session.setSubmitTime(LocalDateTime.now());
+        session.setSubmitTime(effectiveSubmitTime);
         examSessionMapper.updateById(session);
 
         ExamSubmittedEvent event = new ExamSubmittedEvent();
@@ -238,7 +484,8 @@ public class ExamDomainService {
         return Map.of(
                 "sessionId", sessionId,
                 "status", session.getStatus(),
-                "submittedAt", session.getSubmitTime()
+                "submittedAt", session.getSubmitTime(),
+                "deadlineExceeded", deadlineExceeded
         );
     }
 
@@ -322,9 +569,14 @@ public class ExamDomainService {
         return payload;
     }
 
-    public Map<String, Object> getSessionRisk(String sessionId) {
+    public Map<String, Object> getSessionRisk(String sessionId, String operatorId, String role) {
         long sessionLongId = parseLong("sessionId", sessionId);
         ExamSessionEntity session = getSessionEntity(sessionLongId);
+        ExamEntity exam = examMapper.selectById(session.getExamId());
+        if (exam == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Exam not found");
+        }
+        ensureExamAccessibleForTeacher(exam, operatorId, role);
         SessionRiskSummaryEntity summary = sessionRiskSummaryMapper.selectById(sessionLongId);
         if (summary == null) {
             summary = new SessionRiskSummaryEntity();
@@ -350,11 +602,13 @@ public class ExamDomainService {
         return payload;
     }
 
-    public Map<String, Object> listExamRisks(String examId, String riskLevel, Long page, Long size) {
+    public Map<String, Object> listExamRisks(String examId, String riskLevel, Long page, Long size, String operatorId, String role) {
         long examLongId = parseLong("examId", examId);
-        if (examMapper.selectById(examLongId) == null) {
+        ExamEntity exam = examMapper.selectById(examLongId);
+        if (exam == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "Exam not found");
         }
+        ensureExamAccessibleForTeacher(exam, operatorId, role);
         long safePage = normalizePage(page);
         long safeSize = normalizeSize(size);
         long offset = (safePage - 1) * safeSize;
@@ -437,6 +691,304 @@ public class ExamDomainService {
         return updatedCount;
     }
 
+    private void validateSessionOwner(ExamSessionEntity session, String userId) {
+        if (!String.valueOf(session.getUserId()).equals(userId)) {
+            throw new BizException(ErrorCode.FORBIDDEN, "Session does not belong to current user");
+        }
+    }
+
+    private ExamSessionEntity findLatestSession(long examId, long userId) {
+        return examSessionMapper.selectOne(
+                Wrappers.lambdaQuery(ExamSessionEntity.class)
+                        .eq(ExamSessionEntity::getExamId, examId)
+                        .eq(ExamSessionEntity::getUserId, userId)
+                        .orderByDesc(ExamSessionEntity::getId)
+                        .last("limit 1")
+        );
+    }
+
+    private ExamSessionEntity buildNewSession(long examId, long userId, LocalDateTime now, String ip) {
+        ExamSessionEntity sessionEntity = new ExamSessionEntity();
+        sessionEntity.setId(idGenerator.nextId());
+        sessionEntity.setExamId(examId);
+        sessionEntity.setUserId(userId);
+        sessionEntity.setStartTime(now);
+        sessionEntity.setSubmitTime(null);
+        sessionEntity.setStatus(SessionStatus.IN_PROGRESS.name());
+        sessionEntity.setIpAtStart(ip);
+        sessionEntity.setSwitchScreenCount(0);
+        sessionEntity.setLastSaveTime(now);
+        return sessionEntity;
+    }
+
+    private void validateSessionStartable(ExamSessionEntity sessionEntity) {
+        if (SessionStatus.IN_PROGRESS.name().equals(sessionEntity.getStatus())) {
+            return;
+        }
+        if (SessionStatus.SUBMITTED.name().equals(sessionEntity.getStatus())
+                || SessionStatus.FORCE_SUBMITTED.name().equals(sessionEntity.getStatus())) {
+            throw new BizException(ErrorCode.CONFLICT, "Exam has already been submitted by current student");
+        }
+        throw new BizException(ErrorCode.CONFLICT, "Session status is not startable: " + sessionEntity.getStatus());
+    }
+
+    private void ensureExamAccessibleForTeacher(ExamEntity exam, String operatorId, String role) {
+        if (isAdminRole(role)) {
+            return;
+        }
+        long teacherId = parseLong("userId", operatorId);
+        if (exam.getCreatedBy() == null || !exam.getCreatedBy().equals(teacherId)) {
+            throw new BizException(ErrorCode.FORBIDDEN, "Exam does not belong to current teacher");
+        }
+    }
+
+    private boolean isAdminRole(String role) {
+        return "ADMIN".equalsIgnoreCase(String.valueOf(role).trim());
+    }
+
+    private LinkedHashSet<Long> parseTargetStudentIds(List<String> rawStudentIds) {
+        if (rawStudentIds == null || rawStudentIds.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "studentIds cannot be empty");
+        }
+        LinkedHashSet<Long> studentIds = new LinkedHashSet<>();
+        for (String rawStudentId : rawStudentIds) {
+            String value = rawStudentId == null ? "" : rawStudentId.trim();
+            if (!StringUtils.hasText(value)) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "studentIds contains blank value");
+            }
+            studentIds.add(parseLong("studentId", value));
+        }
+        if (studentIds.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "studentIds cannot be empty");
+        }
+        if (studentIds.size() > 500) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "studentIds exceeds max size: 500");
+        }
+        return studentIds;
+    }
+
+    private void validateTargetStudents(LinkedHashSet<Long> studentIds) {
+        List<Long> validStudentIds = userReadMapper.selectActiveStudentIds(new ArrayList<>(studentIds));
+        Set<Long> validIdSet = new HashSet<>(validStudentIds);
+        List<Long> invalidIds = new ArrayList<>();
+        for (Long studentId : studentIds) {
+            if (!validIdSet.contains(studentId)) {
+                invalidIds.add(studentId);
+            }
+        }
+        if (!invalidIds.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Invalid studentIds: " + invalidIds);
+        }
+    }
+
+    private void batchInsertExamTargets(Long examId, Long assignedBy, LinkedHashSet<Long> studentIds) {
+        LocalDateTime now = LocalDateTime.now();
+        for (Long studentId : studentIds) {
+            ExamTargetEntity entity = new ExamTargetEntity();
+            entity.setExamId(examId);
+            entity.setStudentId(studentId);
+            entity.setAssignedBy(assignedBy);
+            entity.setAssignedAt(now);
+            examTargetMapper.insert(entity);
+        }
+    }
+
+    private Map<Long, PaperQuestionSnapshot> loadPaperQuestionMap(Long paperId) {
+        List<PaperQuestionSnapshot> questions = questionReadMapper.selectPaperQuestionsByPaperId(paperId);
+        if (questions.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Paper contains no questions");
+        }
+
+        Map<Long, PaperQuestionSnapshot> result = new HashMap<>();
+        for (PaperQuestionSnapshot question : questions) {
+            Long questionId = question.getQuestionId();
+            if (questionId == null) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "Paper questionId cannot be null");
+            }
+            if (result.putIfAbsent(questionId, question) != null) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "Duplicate questionId in paper: " + questionId);
+            }
+        }
+        return result;
+    }
+
+    private Object normalizeAnswerContent(String rawQuestionType, Object answerContent) {
+        String questionType = normalizeQuestionType(rawQuestionType);
+        if (isBlankAnswer(answerContent)) {
+            return defaultEmptyAnswer(questionType);
+        }
+
+        return switch (questionType) {
+            case "SINGLE" -> normalizeSingleAnswer(answerContent);
+            case "MULTI" -> normalizeMultiAnswer(answerContent);
+            case "JUDGE" -> normalizeJudgeAnswer(answerContent);
+            case "FILL", "SHORT" -> normalizeTextAnswer(answerContent);
+            default -> throw new BizException(ErrorCode.BAD_REQUEST, "Unsupported question type: " + rawQuestionType);
+        };
+    }
+
+    private boolean isBlankAnswer(Object answerContent) {
+        if (answerContent == null) {
+            return true;
+        }
+        if (answerContent instanceof String text) {
+            return !StringUtils.hasText(text);
+        }
+        if (answerContent instanceof Collection<?> collection) {
+            return collection.isEmpty();
+        }
+        if (answerContent instanceof Map<?, ?> map) {
+            return map.isEmpty();
+        }
+        return false;
+    }
+
+    private Object defaultEmptyAnswer(String questionType) {
+        if ("MULTI".equals(questionType)) {
+            return List.of();
+        }
+        return "";
+    }
+
+    private String normalizeSingleAnswer(Object answerContent) {
+        List<String> tokens = parseChoiceTokens(answerContent);
+        if (tokens.size() != 1) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "SINGLE answer must contain exactly one option");
+        }
+        return tokens.get(0);
+    }
+
+    private List<String> normalizeMultiAnswer(Object answerContent) {
+        return parseChoiceTokens(answerContent);
+    }
+
+    private List<String> parseChoiceTokens(Object answerContent) {
+        LinkedHashSet<String> tokens = new LinkedHashSet<>();
+        if (answerContent instanceof Collection<?> collection) {
+            for (Object value : collection) {
+                String token = normalizeChoiceToken(value);
+                if (StringUtils.hasText(token)) {
+                    tokens.add(token);
+                }
+            }
+        } else {
+            String scalar = String.valueOf(answerContent).trim();
+            if (!StringUtils.hasText(scalar)) {
+                return List.of();
+            }
+            String[] pieces = scalar.split(ANSWER_SPLIT_REGEX);
+            for (String piece : pieces) {
+                String token = normalizeChoiceToken(piece);
+                if (StringUtils.hasText(token)) {
+                    tokens.add(token);
+                }
+            }
+        }
+
+        if (tokens.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Choice answer cannot be blank");
+        }
+        return new ArrayList<>(tokens);
+    }
+
+    private String normalizeChoiceToken(Object rawToken) {
+        String token = rawToken == null ? "" : String.valueOf(rawToken).trim().toUpperCase(Locale.ROOT);
+        if (!StringUtils.hasText(token)) {
+            return "";
+        }
+        if (token.matches(".*[,\\uFF0C\\s]+.*")) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Choice option token cannot contain separator characters");
+        }
+        return token;
+    }
+
+    private Object normalizeJudgeAnswer(Object answerContent) {
+        if (answerContent instanceof Boolean boolValue) {
+            return boolValue;
+        }
+        String rawValue = String.valueOf(answerContent).trim().toLowerCase(Locale.ROOT);
+        return switch (rawValue) {
+            case "true", "1", "t", "yes", "y" -> true;
+            case "false", "0", "f", "no", "n" -> false;
+            default -> throw new BizException(ErrorCode.BAD_REQUEST, "JUDGE answer must be true or false");
+        };
+    }
+
+    private String normalizeTextAnswer(Object answerContent) {
+        if (answerContent instanceof List<?> || answerContent instanceof Map<?, ?>) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Text answer must be scalar");
+        }
+        String text = String.valueOf(answerContent).trim();
+        if (!StringUtils.hasText(text)) {
+            return "";
+        }
+        return text;
+    }
+
+    private ExamPaperQuestion toExamPaperQuestion(PaperQuestionSnapshot snapshot) {
+        String questionType = normalizeQuestionType(snapshot.getType());
+
+        ExamPaperQuestion question = new ExamPaperQuestion();
+        question.setQuestionId(snapshot.getQuestionId() == null ? null : String.valueOf(snapshot.getQuestionId()));
+        question.setType(questionType);
+        question.setStem(snapshot.getStem());
+        question.setScore(snapshot.getScore());
+        question.setOrderNo(snapshot.getOrderNo());
+
+        List<ExamPaperOption> options = parsePaperOptions(snapshot.getOptionsJson());
+        if (isChoiceType(questionType) && options.size() < 2) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Choice question must contain at least two options");
+        }
+        question.setOptions(isChoiceType(questionType) ? options : List.of());
+        return question;
+    }
+
+    private List<ExamPaperOption> parsePaperOptions(String rawOptionsJson) {
+        if (!StringUtils.hasText(rawOptionsJson)) {
+            return List.of();
+        }
+        try {
+            List<ExamPaperOption> options = objectMapper.readValue(rawOptionsJson, new TypeReference<List<ExamPaperOption>>() {
+            });
+            if (options == null || options.isEmpty()) {
+                return List.of();
+            }
+            List<ExamPaperOption> normalized = new ArrayList<>(options.size());
+            Set<String> keys = new HashSet<>();
+            for (ExamPaperOption option : options) {
+                if (option == null || !StringUtils.hasText(option.getKey()) || !StringUtils.hasText(option.getText())) {
+                    throw new BizException(ErrorCode.BAD_REQUEST, "Question option is invalid");
+                }
+                String key = option.getKey().trim().toUpperCase(Locale.ROOT);
+                if (!keys.add(key)) {
+                    throw new BizException(ErrorCode.BAD_REQUEST, "Duplicate question option key: " + key);
+                }
+                ExamPaperOption item = new ExamPaperOption();
+                item.setKey(key);
+                item.setText(option.getText().trim());
+                normalized.add(item);
+            }
+            return normalized;
+        } catch (JsonProcessingException ex) {
+            throw new BizException(ErrorCode.INTERNAL_ERROR, "Failed to parse question options");
+        }
+    }
+
+    private boolean isChoiceType(String questionType) {
+        return "SINGLE".equals(questionType) || "MULTI".equals(questionType);
+    }
+
+    private String normalizeQuestionType(String rawQuestionType) {
+        if (!StringUtils.hasText(rawQuestionType)) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Question type is missing");
+        }
+        String type = rawQuestionType.trim().toUpperCase(Locale.ROOT);
+        return switch (type) {
+            case "SINGLE", "MULTI", "JUDGE", "FILL", "SHORT" -> type;
+            default -> throw new BizException(ErrorCode.BAD_REQUEST, "Unsupported question type: " + rawQuestionType);
+        };
+    }
+
     private ExamSessionEntity getSessionEntity(long sessionId) {
         ExamSessionEntity entity = examSessionMapper.selectById(sessionId);
         if (entity == null) {
@@ -473,10 +1025,27 @@ public class ExamDomainService {
         }
     }
 
+    private boolean acquireSimpleLock(String lockKey, Duration ttl) {
+        try {
+            Boolean locked = redisTemplate.opsForValue().setIfAbsent(lockKey, "1", ttl);
+            return Boolean.TRUE.equals(locked);
+        } catch (Exception ex) {
+            log.warn("Lock unavailable, fallback allow, key={}", lockKey, ex);
+            return true;
+        }
+    }
+
+    private void releaseSimpleLock(String lockKey) {
+        try {
+            redisTemplate.delete(lockKey);
+        } catch (Exception ex) {
+            log.warn("Lock release failed, key={}", lockKey, ex);
+        }
+    }
+
     private void publishSubmittedEvent(ExamSubmittedEvent event) {
         if (rabbitTemplate == null) {
-            log.warn("RabbitTemplate unavailable, skip publish exam.submitted event: {}", event.getEventId());
-            return;
+            throw new BizException(ErrorCode.INTERNAL_ERROR, "Message broker is unavailable, submit aborted");
         }
         try {
             rabbitTemplate.convertAndSend(
@@ -486,7 +1055,7 @@ public class ExamDomainService {
                     new CorrelationData(event.getEventId())
             );
         } catch (Exception ex) {
-            log.error("Publish exam.submitted failed: {}", ex.getMessage(), ex);
+            throw new BizException(ErrorCode.INTERNAL_ERROR, "Failed to publish submit event");
         }
     }
 
@@ -501,6 +1070,24 @@ public class ExamDomainService {
         exam.setStatus(ExamStatus.valueOf(entity.getStatus()));
         exam.setCreatedBy(String.valueOf(entity.getCreatedBy()));
         return exam;
+    }
+
+    private AssignedExam toAssignedExam(ExamEntity exam, ExamSessionEntity session) {
+        AssignedExam assignedExam = new AssignedExam();
+        assignedExam.setExamId(String.valueOf(exam.getId()));
+        assignedExam.setPaperId(String.valueOf(exam.getPaperId()));
+        assignedExam.setTitle(exam.getTitle());
+        assignedExam.setStartTime(exam.getStartTime());
+        assignedExam.setEndTime(exam.getEndTime());
+        assignedExam.setAntiCheatLevel(exam.getAntiCheatLevel());
+        assignedExam.setStatus(ExamStatus.valueOf(exam.getStatus()));
+        if (session != null) {
+            assignedExam.setSessionId(String.valueOf(session.getId()));
+            assignedExam.setSessionStatus(SessionStatus.valueOf(session.getStatus()));
+            assignedExam.setSessionStartTime(session.getStartTime());
+            assignedExam.setSessionSubmitTime(session.getSubmitTime());
+        }
+        return assignedExam;
     }
 
     private void syncExamStatusIfNeeded(ExamEntity entity, LocalDateTime now) {

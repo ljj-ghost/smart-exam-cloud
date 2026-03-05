@@ -99,11 +99,13 @@ flowchart LR
 ### 4.5 exam-service
 
 - 考试定义管理。
+- 发布范围管理（`studentIds` -> `e_exam_target`）。
 - 会话生命周期管理。
 - 作答保存与提交。
+- 交卷事务一致性控制（提交状态更新 + `exam.submitted` 发布失败回滚）。
 - 考试状态自动流转调度（`NOT_STARTED -> RUNNING -> FINISHED`）。
 - 防作弊事件采集与会话风险聚合（第一批）。
-- 发布交卷事件。
+- 发布交卷事件（`exam.submitted`）。
 
 ### 4.6 grading-service
 
@@ -111,12 +113,14 @@ flowchart LR
 - 基于标准答案执行客观题自动判分（`SINGLE/MULTI/JUDGE/FILL`）。
 - 当前实现通过 MySQL 跨 schema 只读查询 `exam_db/question_db` 完成判题数据组装。
 - 人工评分流程。
+- 重复/异常任务自愈（已完成任务重发成绩，未完成任务清理后重建）。
 - 发布包含每题得分明细的成绩事件。
 
 ### 4.7 analysis-service
 
 - 消费成绩事件并沉淀快照。
-- 报表服务（分数分布、基于真实判分聚合的 TopN）。
+- 报表服务（分数分布、成绩单、基于真实判分聚合的 TopN）。
+- 成绩单查询通过 `analysis_db.a_score` 关联 `user_db.sys_user` 输出学生视图。
 - 报表缓存与失效。
 
 ### 4.8 admin-service
@@ -139,7 +143,7 @@ flowchart LR
 - `/api/v1/auth/**` -> `auth-service`
 - `/api/v1/users/**` -> `user-service`
 - `/api/v1/questions/**`、`/api/v1/papers/**` -> `question-service`
-- `/api/v1/exams/**`、`/api/v1/sessions/**` -> `exam-service`
+- `/api/v1/exams/**`、`/api/v1/sessions/**`、`/api/v1/students/**` -> `exam-service`（兼容旧学生路径）
 - `/api/v1/grading/**` -> `grading-service`
 - `/api/v1/reports/**` -> `analysis-service`
 - `/api/v1/admin/**` -> `admin-service`
@@ -155,7 +159,7 @@ flowchart LR
 
 - `user_db`：`sys_user`
 - `question_db`：`q_question`、`q_paper`、`q_paper_question`
-- `exam_db`：`e_exam`、`e_exam_session`、`e_answer`、`e_session_risk_event`、`e_session_risk_summary`
+- `exam_db`：`e_exam`、`e_exam_target`、`e_exam_session`、`e_answer`、`e_session_risk_event`、`e_session_risk_summary`
 - `grading_db`：`g_grading_task`、`g_question_score`
 - `analysis_db`：`a_score`、`a_session_question_score`
 - `admin_db`：`sys_role`、`sys_permission`、`sys_role_permission`、`sys_audit_log`、`sys_config`
@@ -163,6 +167,7 @@ flowchart LR
 关键约束：
 
 - `q_paper_question(paper_id, order_no)` 唯一。
+- `e_exam_target(exam_id, student_id)` 唯一。
 - `e_answer(session_id, question_id)` 唯一。
 - `e_session_risk_summary(session_id)` 唯一。
 - `g_grading_task(session_id)` 唯一。
@@ -221,8 +226,10 @@ Redis 主要用途：
 一致性说明：
 
 - 发布端启用 `publisher-confirm-type=correlated` 与 `publisher-returns=true`，支持发布确认与路由失败回调。
+- `exam-service` 交卷在事务内发布 `exam.submitted`，发布失败时提交整体回滚，避免“学生已提交但无阅卷任务”。
 - 消费端启用手动 ACK，失败后进入重试队列（TTL 回流主队列），超过重试上限转入 DLQ。
-- 消费端通过 Redis 去重和 DB 唯一约束保障幂等，分析侧按 `sessionId` Upsert 满足最终一致。
+- `grading-service` 先按 `sessionId` 检查任务完整性，再结合事件去重键兜底，兼容重复消息和历史半成品任务。
+- `analysis-service` 按 `sessionId` Upsert 成绩快照并替换题目得分快照，缓存按 `examId` 失效满足最终一致。
 
 ## 9. 配置中心与环境管理
 
@@ -305,6 +312,8 @@ P1：
 
 - 考试状态自动调度。[已完成，2026-03-04]
 - 真正题目正确率统计链路。[已完成，2026-03-04]
+- 老师成绩单查询能力（`/reports/exams/{examId}/score-sheet`）。[已完成，2026-03-05]
+- 交卷-判卷链路一致性修复（提交失败回滚、判卷任务自愈）。[已完成，2026-03-05]
 - 自动判题规则引擎化。
 
 P2：

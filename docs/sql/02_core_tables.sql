@@ -202,7 +202,8 @@ CREATE TABLE IF NOT EXISTS q_question (
     options_json JSON NOT NULL,
     created_by BIGINT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_q_question_created_at(created_at)
+    INDEX idx_q_question_created_at(created_at),
+    INDEX idx_q_question_created_by_created_at(created_by, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS q_paper (
@@ -212,7 +213,8 @@ CREATE TABLE IF NOT EXISTS q_paper (
     time_limit_minutes INT NOT NULL,
     created_by BIGINT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_q_paper_created_at(created_at)
+    INDEX idx_q_paper_created_at(created_at),
+    INDEX idx_q_paper_created_by_created_at(created_by, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS q_paper_question (
@@ -239,6 +241,17 @@ CREATE TABLE IF NOT EXISTS e_exam (
     INDEX idx_e_exam_time_window(start_time, end_time)
 );
 
+CREATE TABLE IF NOT EXISTS e_exam_target (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    exam_id BIGINT NOT NULL,
+    student_id BIGINT NOT NULL,
+    assigned_by BIGINT NOT NULL,
+    assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_e_exam_target_exam_student(exam_id, student_id),
+    INDEX idx_e_exam_target_student(student_id, exam_id),
+    INDEX idx_e_exam_target_exam(exam_id)
+);
+
 CREATE TABLE IF NOT EXISTS e_exam_session (
     id BIGINT PRIMARY KEY,
     exam_id BIGINT NOT NULL,
@@ -249,6 +262,7 @@ CREATE TABLE IF NOT EXISTS e_exam_session (
     ip_at_start VARCHAR(64),
     switch_screen_count INT NOT NULL DEFAULT 0,
     last_save_time DATETIME NULL,
+    UNIQUE KEY uk_e_exam_session_exam_user(exam_id, user_id),
     INDEX idx_e_exam_session_exam_user(exam_id, user_id),
     INDEX idx_e_exam_session_status(status)
 );

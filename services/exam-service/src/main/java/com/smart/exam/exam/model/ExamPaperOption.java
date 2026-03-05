@@ -1,13 +1,8 @@
-package com.smart.exam.question.model;
+package com.smart.exam.exam.model;
 
-import jakarta.validation.constraints.NotBlank;
+public class ExamPaperOption {
 
-public class QuestionOption {
-
-    @NotBlank
     private String key;
-
-    @NotBlank
     private String text;
 
     public String getKey() {
@@ -26,3 +21,4 @@ public class QuestionOption {
         this.text = text;
     }
 }
+

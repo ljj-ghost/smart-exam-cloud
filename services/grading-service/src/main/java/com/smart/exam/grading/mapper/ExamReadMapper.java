@@ -20,6 +20,14 @@ public interface ExamReadMapper {
     ExamSnapshot selectExamById(@Param("examId") Long examId);
 
     @Select("""
+            SELECT created_by
+            FROM exam_db.e_exam
+            WHERE id = #{examId}
+            LIMIT 1
+            """)
+    Long selectExamOwnerById(@Param("examId") Long examId);
+
+    @Select("""
             SELECT question_id AS questionId, answer_content AS answerContent
             FROM exam_db.e_answer
             WHERE session_id = #{sessionId}

@@ -6,9 +6,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smart.exam.analysis.entity.ScoreEntity;
 import com.smart.exam.analysis.entity.SessionQuestionScoreEntity;
+import com.smart.exam.analysis.mapper.ExamReadMapper;
 import com.smart.exam.analysis.mapper.ScoreMapper;
 import com.smart.exam.analysis.mapper.SessionQuestionScoreMapper;
 import com.smart.exam.analysis.model.QuestionAccuracyItem;
+import com.smart.exam.analysis.model.StudentScoreItem;
 import com.smart.exam.common.core.error.BizException;
 import com.smart.exam.common.core.error.ErrorCode;
 import com.smart.exam.common.core.event.ScorePublishedEvent;
@@ -38,20 +40,26 @@ public class ReportDomainService {
     private static final Duration EVENT_DEDUP_TTL = Duration.ofDays(7);
     private static final String SCORE_DIST_CACHE_PREFIX = "report:score-distribution:";
     private static final String QUESTION_ACCURACY_CACHE_PREFIX = "report:question-accuracy:";
+    private static final String SCORE_SHEET_CACHE_PREFIX = "report:score-sheet:";
     private static final String EVENT_DEDUP_PREFIX = "analysis:event:score-published:";
+    private static final int SCORE_SHEET_DEFAULT_LIMIT = 200;
+    private static final int SCORE_SHEET_MAX_LIMIT = 1000;
 
     private final SnowflakeIdGenerator idGenerator;
+    private final ExamReadMapper examReadMapper;
     private final ScoreMapper scoreMapper;
     private final SessionQuestionScoreMapper sessionQuestionScoreMapper;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
     public ReportDomainService(SnowflakeIdGenerator idGenerator,
+                               ExamReadMapper examReadMapper,
                                ScoreMapper scoreMapper,
                                SessionQuestionScoreMapper sessionQuestionScoreMapper,
                                StringRedisTemplate redisTemplate,
                                ObjectMapper objectMapper) {
         this.idGenerator = idGenerator;
+        this.examReadMapper = examReadMapper;
         this.scoreMapper = scoreMapper;
         this.sessionQuestionScoreMapper = sessionQuestionScoreMapper;
         this.redisTemplate = redisTemplate;
@@ -88,6 +96,7 @@ public class ReportDomainService {
             entity.setExamId(examId);
             entity.setUserId(userId);
             entity.setTotalScore(BigDecimal.valueOf(event.getTotalScore()).setScale(2, RoundingMode.HALF_UP));
+            entity.setCreatedAt(LocalDateTime.now());
             scoreMapper.updateById(entity);
         }
 
@@ -95,7 +104,9 @@ public class ReportDomainService {
         evictReportCache(event.getExamId());
     }
 
-    public Map<String, Object> scoreDistribution(String examId) {
+    public Map<String, Object> scoreDistribution(String examId, String operatorId, String role) {
+        Long examLongId = parseLong("examId", examId);
+        ensureExamAccessible(examLongId, operatorId, role);
         String cacheKey = SCORE_DIST_CACHE_PREFIX + examId;
         Map<String, Object> cached = getCache(cacheKey);
         if (cached != null) {
@@ -104,7 +115,7 @@ public class ReportDomainService {
 
         List<ScoreEntity> scores = scoreMapper.selectList(
                 Wrappers.lambdaQuery(ScoreEntity.class)
-                        .eq(ScoreEntity::getExamId, parseLong("examId", examId))
+                        .eq(ScoreEntity::getExamId, examLongId)
         );
 
         int[] buckets = new int[]{0, 0, 0, 0, 0};
@@ -130,7 +141,9 @@ public class ReportDomainService {
         return payload;
     }
 
-    public Map<String, Object> questionAccuracyTop(String examId, int top) {
+    public Map<String, Object> questionAccuracyTop(String examId, int top, String operatorId, String role) {
+        Long examLongId = parseLong("examId", examId);
+        ensureExamAccessible(examLongId, operatorId, role);
         int actualTop = Math.max(1, Math.min(top, 50));
         String cacheKey = QUESTION_ACCURACY_CACHE_PREFIX + examId + ":" + actualTop;
         Map<String, Object> cached = getCache(cacheKey);
@@ -139,7 +152,7 @@ public class ReportDomainService {
         }
 
         List<QuestionAccuracyItem> accuracyItems = sessionQuestionScoreMapper.selectQuestionAccuracyTop(
-                parseLong("examId", examId),
+                examLongId,
                 actualTop
         );
 
@@ -154,6 +167,37 @@ public class ReportDomainService {
         payload.put("examId", examId);
         payload.put("xAxis", xAxis);
         payload.put("series", series);
+        putCache(cacheKey, payload, REPORT_CACHE_TTL);
+        return payload;
+    }
+
+    public Map<String, Object> scoreSheet(String examId,
+                                          String keyword,
+                                          Integer limit,
+                                          String operatorId,
+                                          String role) {
+        Long examLongId = parseLong("examId", examId);
+        ensureExamAccessible(examLongId, operatorId, role);
+        String normalizedKeyword = trimToNull(keyword);
+        int normalizedLimit = normalizeScoreSheetLimit(limit);
+        String cacheKey = SCORE_SHEET_CACHE_PREFIX + examId + ":" + normalizedLimit + ":"
+                + (normalizedKeyword == null ? "ALL" : normalizedKeyword);
+        Map<String, Object> cached = getCache(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+
+        List<StudentScoreItem> records = scoreMapper.selectScoreSheet(examLongId, normalizedKeyword, normalizedLimit);
+        for (int i = 0; i < records.size(); i++) {
+            records.get(i).setRank(i + 1);
+        }
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("examId", examId);
+        payload.put("keyword", normalizedKeyword);
+        payload.put("limit", normalizedLimit);
+        payload.put("total", records.size());
+        payload.put("records", records);
         putCache(cacheKey, payload, REPORT_CACHE_TTL);
         return payload;
     }
@@ -204,6 +248,10 @@ public class ReportDomainService {
             if (accuracyKeys != null && !accuracyKeys.isEmpty()) {
                 redisTemplate.delete(accuracyKeys);
             }
+            Set<String> scoreSheetKeys = redisTemplate.keys(SCORE_SHEET_CACHE_PREFIX + examId + ":*");
+            if (scoreSheetKeys != null && !scoreSheetKeys.isEmpty()) {
+                redisTemplate.delete(scoreSheetKeys);
+            }
         } catch (Exception ex) {
             log.warn("Failed to evict analysis report cache, examId={}", examId, ex);
         }
@@ -238,6 +286,34 @@ public class ReportDomainService {
             return Long.parseLong(rawValue);
         } catch (NumberFormatException ex) {
             throw new BizException(ErrorCode.BAD_REQUEST, "Invalid " + fieldName + ": " + rawValue);
+        }
+    }
+
+    private String trimToNull(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        return value.trim();
+    }
+
+    private int normalizeScoreSheetLimit(Integer limit) {
+        if (limit == null || limit < 1) {
+            return SCORE_SHEET_DEFAULT_LIMIT;
+        }
+        return Math.min(limit, SCORE_SHEET_MAX_LIMIT);
+    }
+
+    private void ensureExamAccessible(Long examId, String operatorId, String role) {
+        Long ownerId = examReadMapper.selectExamOwnerById(examId);
+        if (ownerId == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Exam not found");
+        }
+        if ("ADMIN".equalsIgnoreCase(String.valueOf(role).trim())) {
+            return;
+        }
+        long teacherId = parseLong("userId", operatorId);
+        if (!ownerId.equals(teacherId)) {
+            throw new BizException(ErrorCode.FORBIDDEN, "Exam does not belong to current teacher");
         }
     }
 }

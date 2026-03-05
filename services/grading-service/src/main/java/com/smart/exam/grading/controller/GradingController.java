@@ -34,8 +34,8 @@ public class GradingController {
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role,
             @RequestHeader(value = "X-Permissions", required = false) String permissions) {
-        requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.GRADING_TASK_VIEW);
-        return ApiResponse.ok(gradingDomainService.listTasks(status));
+        String operatorId = requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.GRADING_TASK_VIEW);
+        return ApiResponse.ok(gradingDomainService.listTasks(status, operatorId, role));
     }
 
     @PostMapping("/tasks/{taskId}/manual-score")
@@ -51,7 +51,7 @@ public class GradingController {
                 permissions,
                 PermissionCodes.GRADING_MANUAL_SCORE
         );
-        return ApiResponse.ok(gradingDomainService.manualScore(taskId, request, safeGraderId));
+        return ApiResponse.ok(gradingDomainService.manualScore(taskId, request, safeGraderId, role));
     }
 
     private String requireTeacherOrAdmin(String userId, String role, String permissions, String requiredPermission) {

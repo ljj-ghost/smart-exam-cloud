@@ -31,6 +31,9 @@ smart-exam-cloud/
     sql/
       01_init_databases.sql
       02_core_tables.sql
+      03_seed_java_questions_100.sql
+      04_seed_users_120.sql
+      05_seed_teacher_question_banks_20x200.sql
   docker-compose.yml
 ```
 
@@ -62,19 +65,31 @@ smart-exam-cloud/
   - `GET /api/v1/questions`
   - `GET /api/v1/questions/{questionId}`
   - `POST /api/v1/papers`
+  - `GET /api/v1/papers`（支持 `keyword/page/size`，用于按名称检索试卷）
   - `GET /api/v1/papers/{paperId}`
+  - 出题校验：教师必须提供标准答案；选择题答案需命中选项；判断题标准化为 `true/false`
+  - 题库隔离：教师仅可查看/使用自己创建的题目与试卷；管理员可全量查看
+  - 组卷校验：题目不可重复，且题型顺序强约束为 `SINGLE/MULTI -> JUDGE -> FILL -> SHORT`
   - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
 - 考试 `exam-service`（`exam_db` + Redis + RabbitMQ）
   - `POST /api/v1/exams`
+  - `GET /api/v1/exams/teachers/me`（老师查看自己已发布考试）
+  - `GET /api/v1/exams/students/me`（学生查看我的考试，兼容旧路径 `/api/v1/students/me/exams`）
   - `POST /api/v1/exams/{examId}/start`
+  - `GET /api/v1/sessions/{sessionId}/paper`（返回会话试卷题面，不含标准答案）
   - `PUT /api/v1/sessions/{sessionId}/answers`
   - `POST /api/v1/sessions/{sessionId}/submit`
   - `POST /api/v1/sessions/{sessionId}/anti-cheat/events`（防作弊事件上报，第一批）
   - `GET /api/v1/sessions/{sessionId}/anti-cheat/risk`（会话风险详情）
   - `GET /api/v1/exams/{examId}/anti-cheat/risks`（按考试查看风险分页）
+  - 发布机制：考试创建必须携带 `studentIds`，发布关系落库 `e_exam_target`
+  - 答卷校验：仅允许保存当前试卷内题目，且按题型校验答案格式
+  - 会话约束：同一学生同一考试仅允许一个会话；已提交后禁止再次开考
+  - 截止约束：考试截止后禁止继续保存答案；提交时间以考试结束时间为上限
+  - 提交一致性：交卷与 `exam.submitted` 事件发布在同事务内，MQ 不可用时提交会失败并回滚
+  - 权限约束：教师仅可查看自己创建考试的防作弊风险数据
   - 考试状态自动流转：`NOT_STARTED -> RUNNING -> FINISHED`
-  - 交卷发布 `exam.submitted` 事件
   - 防作弊第一批：事件采集 + 风险评分聚合（`LOW/MEDIUM/HIGH/CRITICAL`）
   - 防作弊第二批：规则参数支持 `smart-exam.exam.anti-cheat.*` 配置化（Nacos）
   - 已接入接口级细粒度 RBAC（角色 + 权限码）
@@ -82,9 +97,11 @@ smart-exam-cloud/
 - 判卷 `grading-service`（`grading_db` + Redis + RabbitMQ）
   - 监听 `exam.submitted.q`
   - 基于考生答案与标准答案进行客观题自动判分（`SINGLE/MULTI/JUDGE/FILL`）
-  - 按试卷题目明细生成 `g_question_score`，主观题（`SHORT`）进入人工评分
+  - 按试卷题目明细生成 `g_question_score`，简答题（`SHORT`）固定进入人工评分
   - `GET /api/v1/grading/tasks`
   - `POST /api/v1/grading/tasks/{taskId}/manual-score`
+  - 权限约束：教师仅可查询和评分自己创建考试产生的阅卷任务
+  - 重复/异常恢复：已完成任务会重发成绩事件；检测到不完整任务会清理并重建
   - 发布携带每题得分明细的 `score.published` 事件
   - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
@@ -92,7 +109,9 @@ smart-exam-cloud/
   - 监听 `score.published.q`
   - 沉淀会话-题目得分快照（`a_session_question_score`）
   - `GET /api/v1/reports/exams/{examId}/score-distribution`
+  - `GET /api/v1/reports/exams/{examId}/score-sheet`（老师查看成绩单，支持 `keyword/limit`）
   - `GET /api/v1/reports/exams/{examId}/question-accuracy-top`（基于真实判分结果聚合）
+  - 权限约束：教师仅可查看自己创建考试的统计报表
   - 已接入接口级细粒度 RBAC（角色 + 权限码）
 
 - 管理 `admin-service`（`user_db + admin_db` + Redis）
@@ -136,6 +155,10 @@ docker compose ps nacos
 - 建议每次 schema 有变更后重跑：
   - `docs/sql/01_init_databases.sql`
   - `docs/sql/02_core_tables.sql`
+- 可选压测/演示数据：
+  - `docs/sql/03_seed_java_questions_100.sql`
+  - `docs/sql/04_seed_users_120.sql`
+  - `docs/sql/05_seed_teacher_question_banks_20x200.sql`
 
 ## 3.4 初始化 Nacos 配置中心
 
@@ -197,11 +220,13 @@ curl http://localhost:9000/api/v1/users/me \
 - Redis 当前用于防重、幂等与热点缓存。
 - RabbitMQ 用于 `exam -> grading -> analysis` 事件链路。
 - Nacos 用于服务注册发现与统一配置管理。
-- SQL 已包含必要索引与唯一约束（如会话唯一、事件落库去重相关约束）。
+- SQL 已包含必要索引与唯一约束（含 `e_exam_target(exam_id,student_id)` 发布去重、`e_exam_session(exam_id,user_id)` 会话唯一、事件落库去重相关约束）。
 
-## 6. 迭代进度（截至 2026-03-04）
+## 6. 迭代进度（截至 2026-03-05）
 
 - 管理员中心（用户治理、角色权限、系统配置、审计日志）已完成。
 - MQ 可靠投递与消费失败治理（重试、DLQ）已完成。
 - 考试状态自动流转、真实客观判题与题目正确率统计链路已完成。
 - 网关之外业务服务的接口级 RBAC（除 `admin-service`）已完成。
+- 老师成绩单查询（`/reports/exams/{examId}/score-sheet`）已完成。
+- 交卷-判卷链路一致性修复（提交失败回滚、判卷任务自愈）已完成。

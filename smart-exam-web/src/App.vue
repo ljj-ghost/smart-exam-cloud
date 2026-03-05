@@ -1,23 +1,70 @@
-<script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+﻿<script setup>
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, ArrowRight, DataAnalysis, TrendCharts } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { consoleModules, recommendedFlow } from './router/consoleModules'
+import { AUTH_CHANGED_EVENT, getSavedUser } from './api/client'
+import { canAccessModule, getDefaultAccessiblePath } from './composables/accessControl'
 
 const route = useRoute()
 const router = useRouter()
 
 const nowText = ref(new Date().toLocaleString())
+const authUser = ref(getSavedUser())
+const quickJumpPath = ref('')
 let timer = null
+
+const roleLabelMap = {
+  ADMIN: '管理员',
+  TEACHER: '教师',
+  STUDENT: '学生',
+}
+
+const fallbackModule = {
+  name: 'connection',
+  path: '/connection',
+  label: '环境连接',
+  tagline: '网关与账号登录',
+  description: '先登录并完成环境检查，再进入后续业务。',
+  tips: ['先确认账号权限', '再进入业务模块', '关键操作前先保存'],
+}
 
 const isModuleRoute = (modulePath, currentPath = route.path) =>
   currentPath === modulePath || currentPath.startsWith(`${modulePath}/`)
 
-const activeModule = computed(() => consoleModules.find((item) => isModuleRoute(item.path)) || consoleModules[0])
-const activeIndex = computed(() => consoleModules.findIndex((item) => item.path === activeModule.value.path))
-const progressPercent = computed(() => Math.round(((activeIndex.value + 1) / consoleModules.length) * 100))
+const visibleModules = computed(() => consoleModules.filter((item) => canAccessModule(authUser.value, item)))
+const activeModule = computed(
+  () => visibleModules.value.find((item) => isModuleRoute(item.path)) || visibleModules.value[0] || fallbackModule
+)
+const activeIndex = computed(() => visibleModules.value.findIndex((item) => item.path === activeModule.value.path))
+const progressPercent = computed(() => {
+  const total = visibleModules.value.length || 1
+  const current = activeIndex.value < 0 ? 1 : activeIndex.value + 1
+  return Math.round((current / total) * 100)
+})
+
+const chapterText = computed(() => {
+  const total = visibleModules.value.length || 1
+  const current = activeIndex.value < 0 ? 1 : activeIndex.value + 1
+  return `${current} / ${total}`
+})
+
+const currentRoleCode = computed(() => String(authUser.value?.role || '').trim().toUpperCase())
+const currentRoleLabel = computed(() => roleLabelMap[currentRoleCode.value] || currentRoleCode.value || '访客')
+const currentUserName = computed(() => authUser.value?.realName || authUser.value?.username || '未登录')
+
+const activeTips = computed(() =>
+  Array.isArray(activeModule.value?.tips) && activeModule.value.tips.length
+    ? activeModule.value.tips
+    : fallbackModule.tips
+)
+
+const recommendedVisibleFlow = computed(() =>
+  visibleModules.value.length ? visibleModules.value.map((item) => item.label).join(' → ') : recommendedFlow
+)
 
 const goTo = (path) => {
+  if (!path) return
   if (route.path !== path) {
     router.push(path)
   }
@@ -25,143 +72,190 @@ const goTo = (path) => {
 
 const goPrev = () => {
   if (activeIndex.value <= 0) return
-  goTo(consoleModules[activeIndex.value - 1].path)
+  goTo(visibleModules.value[activeIndex.value - 1].path)
 }
 
 const goNext = () => {
-  if (activeIndex.value >= consoleModules.length - 1) return
-  goTo(consoleModules[activeIndex.value + 1].path)
+  if (activeIndex.value >= visibleModules.value.length - 1) return
+  goTo(visibleModules.value[activeIndex.value + 1].path)
+}
+
+const syncAuthState = () => {
+  authUser.value = getSavedUser()
+}
+
+const ensureRouteAccess = () => {
+  if (!visibleModules.value.length) {
+    goTo('/connection')
+    return
+  }
+  const matched = visibleModules.value.some((item) => isModuleRoute(item.path))
+  if (!matched) {
+    goTo(getDefaultAccessiblePath(authUser.value))
+  }
+}
+
+watch(activeModule, (value) => {
+  quickJumpPath.value = value?.path || ''
+}, { immediate: true })
+
+const handleQuickJump = (value) => {
+  if (!value || route.path === value) return
+  goTo(value)
 }
 
 onMounted(() => {
+  window.addEventListener(AUTH_CHANGED_EVENT, syncAuthState)
   timer = window.setInterval(() => {
     nowText.value = new Date().toLocaleString()
   }, 1000)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener(AUTH_CHANGED_EVENT, syncAuthState)
   if (timer) {
     window.clearInterval(timer)
   }
 })
+
+watch([() => route.path, visibleModules], ensureRouteAccess, { immediate: true })
 </script>
 
 <template>
   <div class="app-shell">
-    <div class="bg-halo halo-left"></div>
-    <div class="bg-halo halo-right"></div>
+    <div class="bg-orb orb-a"></div>
+    <div class="bg-orb orb-b"></div>
+    <div class="bg-orb orb-c"></div>
 
-    <header class="app-header reveal-up">
-      <div class="brand-panel">
+    <header class="command-deck reveal-up">
+      <div class="deck-brand">
         <div class="brand-mark">SE</div>
-        <div>
+        <div class="brand-copy">
           <p class="brand-kicker">Smart Exam Cloud</p>
-          <h1 class="brand-title">运营控制台</h1>
-          <p class="brand-sub">页面已拆分为独立路由，桌面端可直接并行处理不同业务模块。</p>
+          <h1 class="brand-title">学园考试指挥中心</h1>
+          <p class="brand-sub">从题库、组卷到考试与阅卷的一体化流程台，按角色自动切换可访问章节。</p>
+          <div class="brand-tags">
+            <span class="brand-tag">角色：{{ currentRoleLabel }}</span>
+            <span class="brand-tag">用户：{{ currentUserName }}</span>
+          </div>
         </div>
       </div>
 
-      <div class="header-metrics">
-        <div class="metric-pill">
-          <span>当前时间</span>
+      <div class="deck-controls">
+        <article class="deck-chip">
+          <span>系统时间</span>
           <strong>{{ nowText }}</strong>
-        </div>
-        <div class="metric-pill">
-          <span>当前页面</span>
+        </article>
+        <article class="deck-chip">
+          <span>当前章节</span>
           <strong>{{ activeModule.label }}</strong>
-        </div>
-        <div class="metric-pill metric-pill-progress">
+        </article>
+        <article class="deck-chip">
           <span>流程进度</span>
+          <strong>{{ chapterText }}</strong>
+        </article>
+        <article class="deck-chip deck-chip-progress">
+          <span>完成度</span>
           <strong>{{ progressPercent }}%</strong>
           <el-progress :percentage="progressPercent" :show-text="false" :stroke-width="6" />
-        </div>
+        </article>
       </div>
     </header>
 
-    <main class="app-main reveal-up delay-1">
-      <aside class="side-nav card-surface">
-        <div class="side-nav-head">
-          <p class="side-nav-kicker">Navigation</p>
-          <h2>业务页面</h2>
+    <div class="layout-grid reveal-up delay-1">
+      <aside class="chapter-rail card-surface">
+        <div class="rail-head">
+          <p class="rail-kicker">Storyline</p>
+          <h2>章节导航</h2>
         </div>
 
-        <div class="side-nav-list">
+        <div class="rail-jump">
+          <p>快速跳转</p>
+          <el-select
+            v-model="quickJumpPath"
+            placeholder="选择章节"
+            style="width: 100%"
+            @change="handleQuickJump"
+          >
+            <el-option
+              v-for="module in visibleModules"
+              :key="module.path"
+              :label="module.label"
+              :value="module.path"
+            />
+          </el-select>
+        </div>
+
+        <div class="rail-list">
           <button
-            v-for="(module, index) in consoleModules"
+            v-for="(module, index) in visibleModules"
             :key="module.path"
             type="button"
-            class="side-nav-item"
+            class="rail-item"
             :class="{ active: isModuleRoute(module.path) }"
             @click="goTo(module.path)"
           >
-            <span class="side-nav-order">{{ String(index + 1).padStart(2, '0') }}</span>
-            <span class="side-nav-main">
-              <span class="side-nav-label">{{ module.label }}</span>
-              <span class="side-nav-tagline">{{ module.tagline }}</span>
-            </span>
-            <span class="side-nav-icon">
-              <el-icon>
-                <component :is="module.icon" />
-              </el-icon>
+            <span class="rail-order">{{ String(index + 1).padStart(2, '0') }}</span>
+            <span class="rail-content">
+              <span class="rail-label">{{ module.label }}</span>
+              <span class="rail-tagline">{{ module.tagline }}</span>
             </span>
           </button>
         </div>
+
+        <div class="rail-actions">
+          <el-button plain :disabled="activeIndex <= 0" @click="goPrev">
+            <el-icon><ArrowLeft /></el-icon>
+            上一章
+          </el-button>
+          <el-button type="primary" :disabled="activeIndex >= visibleModules.length - 1" @click="goNext">
+            下一章
+            <el-icon><ArrowRight /></el-icon>
+          </el-button>
+        </div>
       </aside>
 
-      <section class="workspace card-surface">
-        <div class="workspace-head">
-          <div>
-            <p class="workspace-kicker">Current Page</p>
+      <main class="mission-zone">
+        <section class="mission-hero card-surface">
+          <div class="hero-head">
+            <p class="hero-kicker">Mission Stage</p>
             <h2>{{ activeModule.label }}</h2>
-            <p class="workspace-desc">{{ activeModule.description }}</p>
+            <p class="hero-desc">{{ activeModule.description }}</p>
           </div>
+        </section>
 
-          <div class="workspace-actions">
-            <el-button plain :disabled="activeIndex <= 0" @click="goPrev">
-              <el-icon><ArrowLeft /></el-icon>
-              上一页
-            </el-button>
-            <el-button type="primary" :disabled="activeIndex >= consoleModules.length - 1" @click="goNext">
-              下一页
-              <el-icon><ArrowRight /></el-icon>
-            </el-button>
-          </div>
-        </div>
-
-        <div class="workspace-body">
+        <section class="mission-canvas card-surface">
           <router-view v-slot="{ Component }">
             <transition name="route-fade" mode="out-in">
               <component :is="Component" :key="route.path" />
             </transition>
           </router-view>
-        </div>
-      </section>
+        </section>
+      </main>
 
-      <aside class="tips-rail">
-        <el-card class="guide-card" shadow="never">
+      <aside class="context-dock">
+        <el-card class="dock-card" shadow="never">
           <template #header>
-            <div class="guide-head">
+            <div class="dock-head">
               <el-icon><TrendCharts /></el-icon>
-              <strong>操作建议</strong>
+              <strong>本章提示</strong>
             </div>
           </template>
-          <ol class="guide-list">
-            <li v-for="(tip, index) in activeModule.tips" :key="`${activeModule.name}-${index}`">
-              {{ tip }}
-            </li>
+          <ol class="dock-list">
+            <li v-for="(tip, index) in activeTips" :key="`${activeModule.name}-${index}`">{{ tip }}</li>
           </ol>
         </el-card>
 
-        <el-card class="guide-card" shadow="never">
+        <el-card class="dock-card" shadow="never">
           <template #header>
-            <div class="guide-head">
+            <div class="dock-head">
               <el-icon><DataAnalysis /></el-icon>
               <strong>推荐路径</strong>
             </div>
           </template>
-          <p class="guide-path">{{ recommendedFlow }}</p>
+          <p class="dock-path">{{ recommendedVisibleFlow }}</p>
         </el-card>
       </aside>
-    </main>
+    </div>
   </div>
 </template>

@@ -1,9 +1,19 @@
 package com.smart.exam.question.model;
 
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
 public class PaperQuestion {
 
+    @NotBlank
     private String questionId;
+
+    @NotNull
+    @Min(1)
     private Integer score;
+
+    @Min(1)
     private Integer orderNo;
 
     public String getQuestionId() {
@@ -30,4 +40,3 @@ public class PaperQuestion {
         this.orderNo = orderNo;
     }
 }
-

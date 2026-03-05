@@ -1,6 +1,8 @@
 package com.smart.exam.question.dto;
 
 import com.smart.exam.question.model.PaperQuestion;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -13,9 +15,11 @@ public class CreatePaperRequest {
     private String name;
 
     @NotNull
+    @Min(1)
     private Integer timeLimitMinutes;
 
     @NotEmpty
+    @Valid
     private List<PaperQuestion> questions;
 
     public String getName() {
@@ -42,4 +46,3 @@ public class CreatePaperRequest {
         this.questions = questions;
     }
 }
-

@@ -1,27 +1,27 @@
 package com.smart.exam.exam.model;
 
 import java.time.LocalDateTime;
-import java.util.List;
 
-public class Exam {
+public class AssignedExam {
 
-    private String id;
+    private String examId;
     private String paperId;
     private String title;
     private LocalDateTime startTime;
     private LocalDateTime endTime;
     private Integer antiCheatLevel;
     private ExamStatus status;
-    private String createdBy;
-    private Integer targetStudentCount;
-    private List<String> studentIds;
+    private String sessionId;
+    private SessionStatus sessionStatus;
+    private LocalDateTime sessionStartTime;
+    private LocalDateTime sessionSubmitTime;
 
-    public String getId() {
-        return id;
+    public String getExamId() {
+        return examId;
     }
 
-    public void setId(String id) {
-        this.id = id;
+    public void setExamId(String examId) {
+        this.examId = examId;
     }
 
     public String getPaperId() {
@@ -72,27 +72,36 @@ public class Exam {
         this.status = status;
     }
 
-    public String getCreatedBy() {
-        return createdBy;
+    public String getSessionId() {
+        return sessionId;
     }
 
-    public void setCreatedBy(String createdBy) {
-        this.createdBy = createdBy;
+    public void setSessionId(String sessionId) {
+        this.sessionId = sessionId;
     }
 
-    public Integer getTargetStudentCount() {
-        return targetStudentCount;
+    public SessionStatus getSessionStatus() {
+        return sessionStatus;
     }
 
-    public void setTargetStudentCount(Integer targetStudentCount) {
-        this.targetStudentCount = targetStudentCount;
+    public void setSessionStatus(SessionStatus sessionStatus) {
+        this.sessionStatus = sessionStatus;
     }
 
-    public List<String> getStudentIds() {
-        return studentIds;
+    public LocalDateTime getSessionStartTime() {
+        return sessionStartTime;
     }
 
-    public void setStudentIds(List<String> studentIds) {
-        this.studentIds = studentIds;
+    public void setSessionStartTime(LocalDateTime sessionStartTime) {
+        this.sessionStartTime = sessionStartTime;
+    }
+
+    public LocalDateTime getSessionSubmitTime() {
+        return sessionSubmitTime;
+    }
+
+    public void setSessionSubmitTime(LocalDateTime sessionSubmitTime) {
+        this.sessionSubmitTime = sessionSubmitTime;
     }
 }
+

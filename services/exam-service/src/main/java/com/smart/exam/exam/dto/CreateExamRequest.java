@@ -2,9 +2,11 @@ package com.smart.exam.exam.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public class CreateExamRequest {
 
@@ -24,6 +26,9 @@ public class CreateExamRequest {
 
     @NotNull
     private Integer antiCheatLevel;
+
+    @NotEmpty
+    private List<@NotBlank String> studentIds;
 
     public String getPaperId() {
         return paperId;
@@ -64,5 +69,12 @@ public class CreateExamRequest {
     public void setAntiCheatLevel(Integer antiCheatLevel) {
         this.antiCheatLevel = antiCheatLevel;
     }
-}
 
+    public List<String> getStudentIds() {
+        return studentIds;
+    }
+
+    public void setStudentIds(List<String> studentIds) {
+        this.studentIds = studentIds;
+    }
+}

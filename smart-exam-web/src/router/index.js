@@ -1,16 +1,29 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { consoleModules } from './consoleModules'
+import { getSavedUser } from '../api/client'
+import {
+  canAccessModule,
+  canAccessRouteMeta,
+  getDefaultAccessiblePath,
+  hasAnyPermission,
+} from '../composables/accessControl'
 
 const adminModule = consoleModules.find((item) => item.name === 'admin')
-const normalModules = consoleModules.filter((item) => item.name !== 'admin')
+const questionModule = consoleModules.find((item) => item.name === 'questions')
+const normalModules = consoleModules.filter((item) => !['admin', 'questions'].includes(item.name))
 
 if (!adminModule) {
   throw new Error('Admin module metadata is missing in consoleModules.')
+}
+if (!questionModule) {
+  throw new Error('Question module metadata is missing in consoleModules.')
 }
 
 const lazyPages = {
   connection: () => import('../components/console/ConnectionPanel.vue'),
   questions: () => import('../components/console/QuestionTab.vue'),
+  'questions-create': () => import('../components/console/question/QuestionCreatePage.vue'),
+  'questions-library': () => import('../components/console/question/QuestionLibraryPage.vue'),
   papers: () => import('../components/console/PaperTab.vue'),
   exams: () => import('../components/console/ExamTab.vue'),
   grading: () => import('../components/console/GradingTab.vue'),
@@ -31,6 +44,12 @@ const resolveLazyPage = (name) => {
   return loader
 }
 
+const resolveQuestionHomePath = (user) => {
+  if (hasAnyPermission(user, ['QUESTION_CREATE'])) return '/questions/create'
+  if (hasAnyPermission(user, ['QUESTION_LIST', 'QUESTION_DETAIL'])) return '/questions/library'
+  return getDefaultAccessiblePath(user)
+}
+
 const routes = [
   { path: '/', redirect: consoleModules[0].path },
   ...normalModules.map((module) => ({
@@ -38,6 +57,10 @@ const routes = [
     name: module.name,
     component: resolveLazyPage(module.name),
     meta: {
+      moduleName: module.name,
+      public: module.public,
+      roles: module.roles,
+      permissionsAny: module.permissionsAny,
       label: module.label,
       tagline: module.tagline,
       description: module.description,
@@ -45,10 +68,46 @@ const routes = [
     },
   })),
   {
+    path: questionModule.path,
+    name: questionModule.name,
+    component: resolveLazyPage('questions'),
+    meta: {
+      moduleName: questionModule.name,
+      public: questionModule.public,
+      roles: questionModule.roles,
+      permissionsAny: questionModule.permissionsAny,
+      label: questionModule.label,
+      tagline: questionModule.tagline,
+      description: questionModule.description,
+      tips: questionModule.tips,
+    },
+    redirect: () => resolveQuestionHomePath(getSavedUser()),
+    children: [
+      {
+        path: 'create',
+        name: 'questions-create',
+        component: resolveLazyPage('questions-create'),
+        meta: { moduleName: questionModule.name, roles: ['ADMIN', 'TEACHER'], permissionsAny: ['QUESTION_CREATE'] },
+      },
+      {
+        path: 'library',
+        name: 'questions-library',
+        component: resolveLazyPage('questions-library'),
+        meta: {
+          moduleName: questionModule.name,
+          roles: ['ADMIN', 'TEACHER'],
+          permissionsAny: ['QUESTION_LIST', 'QUESTION_DETAIL'],
+        },
+      },
+    ],
+  },
+  {
     path: adminModule.path,
     name: adminModule.name,
     component: resolveLazyPage('admin'),
     meta: {
+      moduleName: adminModule.name,
+      roles: adminModule.roles,
       label: adminModule.label,
       tagline: adminModule.tagline,
       description: adminModule.description,
@@ -56,11 +115,11 @@ const routes = [
     },
     redirect: '/admin/users',
     children: [
-      { path: 'users', name: 'admin-users', component: resolveLazyPage('admin-users') },
-      { path: 'roles', name: 'admin-roles', component: resolveLazyPage('admin-roles') },
-      { path: 'configs', name: 'admin-configs', component: resolveLazyPage('admin-configs') },
-      { path: 'audits', name: 'admin-audits', component: resolveLazyPage('admin-audits') },
-      { path: 'risks', name: 'admin-risks', component: resolveLazyPage('admin-risks') },
+      { path: 'users', name: 'admin-users', component: resolveLazyPage('admin-users'), meta: { moduleName: adminModule.name } },
+      { path: 'roles', name: 'admin-roles', component: resolveLazyPage('admin-roles'), meta: { moduleName: adminModule.name } },
+      { path: 'configs', name: 'admin-configs', component: resolveLazyPage('admin-configs'), meta: { moduleName: adminModule.name } },
+      { path: 'audits', name: 'admin-audits', component: resolveLazyPage('admin-audits'), meta: { moduleName: adminModule.name } },
+      { path: 'risks', name: 'admin-risks', component: resolveLazyPage('admin-risks'), meta: { moduleName: adminModule.name } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: consoleModules[0].path },
@@ -70,6 +129,30 @@ const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
   scrollBehavior: () => ({ left: 0, top: 0 }),
+})
+
+router.beforeEach((to) => {
+  const user = getSavedUser()
+  if (!canAccessRouteMeta(user, to.meta)) {
+    if (String(to.path || '').startsWith('/questions/')) {
+      const questionPath = resolveQuestionHomePath(user)
+      if (questionPath !== to.path) {
+        return { path: questionPath, replace: true }
+      }
+    }
+    const fallbackPath = getDefaultAccessiblePath(user)
+    if (to.path !== fallbackPath) {
+      return { path: fallbackPath, replace: true }
+    }
+    return true
+  }
+
+  const moduleName = to.meta?.moduleName
+  if (!moduleName) return true
+  if (canAccessModule(user, moduleName)) return true
+  const fallbackPath = getDefaultAccessiblePath(user)
+  if (to.path === fallbackPath) return true
+  return { path: fallbackPath, replace: true }
 })
 
 export default router

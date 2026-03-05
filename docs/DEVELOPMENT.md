@@ -69,6 +69,9 @@ docker compose ps
 ```powershell
 Get-Content docs/sql/01_init_databases.sql | docker exec -i smart-exam-mysql mysql -uroot -proot
 Get-Content docs/sql/02_core_tables.sql | docker exec -i smart-exam-mysql mysql -uroot -proot
+Get-Content docs/sql/03_seed_java_questions_100.sql | docker exec -i smart-exam-mysql mysql -uroot -proot
+Get-Content docs/sql/04_seed_users_120.sql | docker exec -i smart-exam-mysql mysql -uroot -proot
+Get-Content docs/sql/05_seed_teacher_question_banks_20x200.sql | docker exec -i smart-exam-mysql mysql -uroot -proot
 ```
 
 ### 5.2 Linux/macOS
@@ -76,7 +79,14 @@ Get-Content docs/sql/02_core_tables.sql | docker exec -i smart-exam-mysql mysql 
 ```bash
 docker exec -i smart-exam-mysql mysql -uroot -proot < docs/sql/01_init_databases.sql
 docker exec -i smart-exam-mysql mysql -uroot -proot < docs/sql/02_core_tables.sql
+docker exec -i smart-exam-mysql mysql -uroot -proot < docs/sql/03_seed_java_questions_100.sql
+docker exec -i smart-exam-mysql mysql -uroot -proot < docs/sql/04_seed_users_120.sql
+docker exec -i smart-exam-mysql mysql -uroot -proot < docs/sql/05_seed_teacher_question_banks_20x200.sql
 ```
+
+`03_seed_java_questions_100.sql` 会向 `question_db.q_question` 追加 100 道 Java 题（`SINGLE/MULTI/JUDGE/FILL/SHORT` 各 20 题）。
+`04_seed_users_120.sql` 会补齐 `teacher001~teacher020` 与 `student001~student100`。
+`05_seed_teacher_question_banks_20x200.sql` 会为 20 位教师各生成 200 题独立题库（共 4000 题）。
 
 ## 6. 初始化 Nacos 配置
 
@@ -177,7 +187,67 @@ curl http://localhost:9000/api/v1/users/me \
   -H "Authorization: Bearer <token>"
 ```
 
-### 10.3 MQ 可靠性联调检查
+### 10.3 出试卷与答卷联调（教师出卷，学生答卷）
+
+当前业务规则：
+
+- 题型支持：`SINGLE/MULTI/JUDGE/FILL/SHORT`
+- 试卷题型顺序固定：`SINGLE/MULTI -> JUDGE -> FILL -> SHORT`
+- 教师负责制定标准答案
+- 题库与试卷按教师隔离：教师仅可查看/组卷自己创建的题目和试卷
+- 学生只能在考试会话内答卷，`SHORT` 题进入人工评分，其它题型自动判分
+- 同一学生同一考试只允许一个会话：进行中可复用，已提交不可再次开考
+- 考试结束后禁止继续保存答案；提交时间按结束时间封顶，避免超时获益
+- 交卷与事件发布保持一致：若 `exam.submitted` 事件投递失败，交卷事务回滚并返回错误
+- 教师仅可查看自己考试的风险、阅卷任务与分析报表（管理员可全量）
+
+联调建议步骤：
+
+1. 教师创建题目（含标准答案）并按规则组卷。
+2. 教师创建考试时必须选择发布学生（`studentIds`）。
+3. 学生调用 `GET /api/v1/exams/students/me` 查看“我的考试”列表（兼容旧路径 `/api/v1/students/me/exams`）。
+4. 学生对已分配考试调用 `POST /api/v1/exams/{examId}/start` 启动/复用会话。
+5. 学生调用 `GET /api/v1/sessions/{sessionId}/paper` 拉取题面（不含标准答案）。
+6. 学生调用 `PUT /api/v1/sessions/{sessionId}/answers` 保存答案并提交。
+7. 阅卷服务中 `SHORT` 题任务状态应为 `MANUAL_REQUIRED`，人工评分后变为 `DONE`。
+8. 教师调用 `GET /api/v1/reports/exams/{examId}/score-sheet` 查看成绩单。
+
+增量升级 SQL（已有环境）：
+
+```sql
+ALTER TABLE exam_db.e_exam_target
+ADD UNIQUE INDEX uk_e_exam_target_exam_student(exam_id, student_id);
+
+ALTER TABLE exam_db.e_exam_session
+ADD UNIQUE INDEX uk_e_exam_session_exam_user(exam_id, user_id);
+```
+
+如果历史环境已存在同一 `(exam_id,student_id)` 或 `(exam_id,user_id)` 多条脏数据，需先清理后再执行索引。
+
+示例清理 SQL（保留每组最大 `id`）：
+
+```sql
+DELETE es
+FROM exam_db.e_exam_session es
+JOIN (
+  SELECT exam_id, user_id, MAX(id) AS keep_id
+  FROM exam_db.e_exam_session
+  GROUP BY exam_id, user_id
+  HAVING COUNT(*) > 1
+) dup
+ON es.exam_id = dup.exam_id
+AND es.user_id = dup.user_id
+AND es.id <> dup.keep_id;
+```
+
+示例（学生读取会话试卷）：
+
+```bash
+curl http://localhost:9000/api/v1/sessions/<sessionId>/paper \
+  -H "Authorization: Bearer <student-token>"
+```
+
+### 10.4 MQ 可靠性联调检查
 
 当前 `exam-service -> grading-service -> analysis-service` 的异步链路已启用以下机制：
 
@@ -191,7 +261,7 @@ curl http://localhost:9000/api/v1/users/me \
 - `exam.submitted.q` / `exam.submitted.retry.q` / `exam.submitted.dlq.q`
 - `score.published.q` / `score.published.retry.q` / `score.published.dlq.q`
 
-### 10.4 真实判题与正确率联调检查
+### 10.5 真实判题与正确率联调检查
 
 当前链路已改为真实数据判分：
 
@@ -206,12 +276,12 @@ curl http://localhost:9000/api/v1/users/me \
 2. 在阅卷页确认任务状态为 `MANUAL_REQUIRED`，提交人工评分后变更为 `DONE`。
 3. 调用 `GET /api/v1/reports/exams/{examId}/question-accuracy-top?top=10`，确认题目维度返回真实准确率。
 
-### 10.5 考试状态自动流转检查
+### 10.6 考试状态自动流转检查
 
 - `exam-service` 已启用定时调度，按时间窗自动更新状态：`NOT_STARTED -> RUNNING -> FINISHED`。
 - 除定时任务外，读取考试详情时也会做一次状态兜底同步，避免缓存状态滞后。
 
-### 10.6 管理员中心联调检查
+### 10.7 管理员中心联调检查
 
 1. 使用管理员账号登录：
 
@@ -239,11 +309,11 @@ curl -X PUT http://localhost:9000/api/v1/admin/roles/TEACHER/permissions \
 
 4. 在 `GET /api/v1/admin/audits` 查询最新审计日志，确认以上操作均有落库记录。
 
-### 10.7 细粒度 RBAC（第二批）联调检查
+### 10.8 细粒度 RBAC（第二批）联调检查
 
 本批次已将以下服务接口接入 `X-Permissions` 细粒度校验：
 
-- `question-service`：题目创建/列表/详情、试卷创建/详情
+- `question-service`：题目创建/列表/详情、试卷创建/详情（含教师题库隔离）
 - `analysis-service`：分数分布、题目正确率 TopN 报表
 - `user-service`：`/users/me`、`/users/{id}`、`/users`
 
@@ -273,13 +343,13 @@ curl "http://localhost:9000/api/v1/reports/exams/<examId>/score-distribution" \
   -H "Authorization: Bearer <teacher-token>"
 ```
 
-### 10.8 防作弊事件采集与风险评分（第一批）联调检查
+### 10.9 防作弊事件采集与风险评分（第一批）联调检查
 
 当前已在 `exam-service` 落地第一批能力：
 
 - 学生端上报防作弊事件：`POST /api/v1/sessions/{sessionId}/anti-cheat/events`
-- 教师/管理员查看会话风险：`GET /api/v1/sessions/{sessionId}/anti-cheat/risk`
-- 教师/管理员按考试分页查看风险：`GET /api/v1/exams/{examId}/anti-cheat/risks`
+- 教师/管理员查看会话风险：`GET /api/v1/sessions/{sessionId}/anti-cheat/risk`（教师仅限本人考试）
+- 教师/管理员按考试分页查看风险：`GET /api/v1/exams/{examId}/anti-cheat/risks`（教师仅限本人考试）
 
 联调前置条件：
 
@@ -306,7 +376,7 @@ curl "http://localhost:9000/api/v1/exams/<examId>/anti-cheat/risks?page=1&size=2
   -H "Authorization: Bearer <teacher-token>"
 ```
 
-### 10.9 防作弊规则配置化与后台风险页（第二批）联调检查
+### 10.10 防作弊规则配置化与后台风险页（第二批）联调检查
 
 `exam-service` 已支持通过 Nacos 配置防作弊规则参数，配置位于：
 
@@ -328,44 +398,73 @@ curl "http://localhost:9000/api/v1/exams/<examId>/anti-cheat/risks?page=1&size=2
 2. 重启 `exam-service`（当前按重启生效流程执行）。
 3. 在前端进入 `管理后台 -> 风险监控`（`/admin/risks`）查看风险分页和会话事件详情。
 
-## 12. 常见问题
+### 10.11 成绩单与提交流程可靠性检查
 
-### 12.1 服务启动后连不上 Nacos
+成绩单接口（教师/管理员）：
+
+- `GET /api/v1/reports/exams/{examId}/score-sheet?keyword=<可选>&limit=<可选>`
+- `keyword` 支持按 `userId/username/realName` 模糊检索。
+- `limit` 默认 `200`，最大 `1000`。
+
+建议验证步骤：
+
+1. 学生提交答卷后，观察 `exam.submitted.q` 进入并被消费。
+2. 若任务为 `MANUAL_REQUIRED`，完成人工评分后确认状态改为 `DONE`。
+3. 教师调用成绩单接口，确认返回 `records[].rank/userId/username/realName/totalScore/publishedAt`。
+4. 同一会话重复发布成绩时，确认成绩单中的发布时间会刷新为最新发布时间。
+
+示例：
+
+```bash
+curl "http://localhost:9000/api/v1/reports/exams/<examId>/score-sheet?keyword=student001&limit=50" \
+  -H "Authorization: Bearer <teacher-token>"
+```
+
+## 11. 常见问题
+
+### 11.1 服务启动后连不上 Nacos
 
 - 检查 Nacos 是否启动：`docker compose ps nacos`
 - 检查端口是否开放：`8848`、`9848`、`9849`
 - 检查 `NACOS_SERVER_ADDR` 是否和当前环境一致
 
-### 12.2 数据库脚本没有自动执行
+### 11.2 数据库脚本没有自动执行
 
 - 当前 compose 未挂载初始化目录，属于预期行为
 - 按第 5 节手动执行 SQL
 
-### 12.3 网关 404 或路由不到下游服务
+### 11.3 网关 404 或路由不到下游服务
 
 - 确认下游服务已注册到 Nacos
 - 确认 Nacos 中已导入 `gateway-service.yaml`
 - 确认访问路径包含 `/api/v1/...`
 
-### 12.4 RabbitMQ 报 PRECONDITION_FAILED（队列参数不一致）
+### 11.4 RabbitMQ 报 PRECONDITION_FAILED（队列参数不一致）
 
 - 通常是你在引入重试/DLQ 前已创建过同名队列（无 DLX 参数）
 - 本地可执行 `docker compose down -v` 清理数据卷后重启中间件
 - 然后按第 5 节重建数据库，再重新启动服务
 
-### 12.5 analysis-service 报表接口报表不存在 `a_session_question_score`
+### 11.5 analysis-service 报表接口报表不存在 `a_session_question_score`
 
 - 说明你使用的是旧数据库结构（未包含新表）
 - 重新执行 `docs/sql/02_core_tables.sql`，或手动创建 `a_session_question_score`
 
-### 12.6 接口返回 `403 Insufficient permission`
+### 11.6 接口返回 `403 Insufficient permission`
 
 - 先确认是否使用了旧 token：重新登录后再试。
 - 确认已执行最新 `docs/sql/02_core_tables.sql`，并且 `sys_role_permission` 中存在目标权限码。
 - 如果你通过管理员接口改过角色权限，检查是否把必需权限移除了。
 - 确认请求经过网关（`gateway-service`）转发；权限头 `X-Permissions` 由网关注入。
 
-## 13. 常用命令
+### 11.7 学生提交后老师看不到阅卷任务或成绩单
+
+- 先检查 `POST /sessions/{sessionId}/submit` 的返回是否成功；若 RabbitMQ 不可用，当前实现会直接返回错误并回滚提交。
+- 再检查 RabbitMQ 三组队列是否有堆积：`exam.submitted.*`、`score.published.*`。
+- 若 `grading-service` 已有同 `sessionId` 的历史脏任务，当前实现会自动识别并重建；仍异常时可清理该会话任务后重放消息。
+- 检查老师是否有 `GRADING_TASK_VIEW`、`REPORT_SCORE_DISTRIBUTION_VIEW` 权限。
+
+## 12. 常用命令
 
 ```bash
 # 停止中间件（保留数据）
@@ -379,7 +478,7 @@ docker compose logs -f nacos
 docker compose logs -f mysql
 ```
 
-## 14. 需求与架构文档索引
+## 13. 需求与架构文档索引
 
 为避免文档重复维护，本文件只保留开发与联调步骤。
 业务需求与技术架构请直接查看以下文档：

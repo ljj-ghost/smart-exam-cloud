@@ -29,8 +29,8 @@ public class ReportController {
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role,
             @RequestHeader(value = "X-Permissions", required = false) String permissions) {
-        requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.REPORT_SCORE_DISTRIBUTION_VIEW);
-        return ApiResponse.ok(reportDomainService.scoreDistribution(examId));
+        String operatorId = requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.REPORT_SCORE_DISTRIBUTION_VIEW);
+        return ApiResponse.ok(reportDomainService.scoreDistribution(examId, operatorId, role));
     }
 
     @GetMapping("/exams/{examId}/question-accuracy-top")
@@ -40,13 +40,26 @@ public class ReportController {
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Role", required = false) String role,
             @RequestHeader(value = "X-Permissions", required = false) String permissions) {
-        requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.REPORT_QUESTION_ACCURACY_VIEW);
-        return ApiResponse.ok(reportDomainService.questionAccuracyTop(examId, top));
+        String operatorId = requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.REPORT_QUESTION_ACCURACY_VIEW);
+        return ApiResponse.ok(reportDomainService.questionAccuracyTop(examId, top, operatorId, role));
     }
 
-    private void requireTeacherOrAdmin(String userId, String role, String permissions, String requiredPermission) {
-        RoleGuard.requireUserId(userId);
+    @GetMapping("/exams/{examId}/score-sheet")
+    public ApiResponse<Map<String, Object>> scoreSheet(
+            @PathVariable("examId") String examId,
+            @RequestParam(name = "keyword", required = false) String keyword,
+            @RequestParam(name = "limit", required = false) Integer limit,
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Role", required = false) String role,
+            @RequestHeader(value = "X-Permissions", required = false) String permissions) {
+        String operatorId = requireTeacherOrAdmin(userId, role, permissions, PermissionCodes.REPORT_SCORE_DISTRIBUTION_VIEW);
+        return ApiResponse.ok(reportDomainService.scoreSheet(examId, keyword, limit, operatorId, role));
+    }
+
+    private String requireTeacherOrAdmin(String userId, String role, String permissions, String requiredPermission) {
+        String safeUserId = RoleGuard.requireUserId(userId);
         RoleGuard.requireRole(role, "ADMIN", "TEACHER");
         RoleGuard.requirePermission(role, permissions, requiredPermission);
+        return safeUserId;
     }
 }

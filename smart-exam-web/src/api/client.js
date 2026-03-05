@@ -3,12 +3,19 @@ import axios from 'axios'
 const TOKEN_KEY = 'smart_exam_token'
 const USER_KEY = 'smart_exam_user'
 const BASE_KEY = 'smart_exam_api_base'
+export const AUTH_CHANGED_EVENT = 'smart-exam-auth-changed'
 
 const defaultBase = import.meta.env.VITE_API_BASE || '/api/v1'
 const savedBase = localStorage.getItem(BASE_KEY)
 const savedToken = localStorage.getItem(TOKEN_KEY)
 
 let token = savedToken || ''
+
+const notifyAuthChanged = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT))
+  }
+}
 
 const http = axios.create({
   baseURL: savedBase || defaultBase,
@@ -60,6 +67,7 @@ export const setToken = (nextToken) => {
   } else {
     localStorage.removeItem(TOKEN_KEY)
   }
+  notifyAuthChanged()
 }
 
 export const getSavedUser = () => {
@@ -77,6 +85,7 @@ export const setSavedUser = (user) => {
   } else {
     localStorage.removeItem(USER_KEY)
   }
+  notifyAuthChanged()
 }
 
 export const clearAuth = () => {
@@ -93,9 +102,13 @@ export const api = {
   listQuestions: () => http.get('/questions'),
   getQuestion: (questionId) => http.get(`/questions/${questionId}`),
   createPaper: (payload) => http.post('/papers', payload),
+  listPapers: (params) => http.get('/papers', { params }),
   getPaper: (paperId) => http.get(`/papers/${paperId}`),
   createExam: (payload) => http.post('/exams', payload),
+  listPublishedExams: () => http.get('/exams/teachers/me'),
+  listAssignedExams: () => http.get('/exams/students/me'),
   startExam: (examId) => http.post(`/exams/${examId}/start`),
+  getSessionPaper: (sessionId) => http.get(`/sessions/${sessionId}/paper`),
   saveAnswers: (sessionId, payload) => http.put(`/sessions/${sessionId}/answers`, payload),
   submitSession: (sessionId) => http.post(`/sessions/${sessionId}/submit`),
   reportAntiCheatEvent: (sessionId, payload) => http.post(`/sessions/${sessionId}/anti-cheat/events`, payload),
@@ -104,6 +117,7 @@ export const api = {
   listGradingTasks: (status) => http.get('/grading/tasks', { params: { status: status || undefined } }),
   manualScore: (taskId, payload) => http.post(`/grading/tasks/${taskId}/manual-score`, payload),
   scoreDistribution: (examId) => http.get(`/reports/exams/${examId}/score-distribution`),
+  scoreSheet: (examId, params) => http.get(`/reports/exams/${examId}/score-sheet`, { params }),
   questionAccuracyTop: (examId, top) =>
     http.get(`/reports/exams/${examId}/question-accuracy-top`, { params: { top } }),
   adminOverview: () => http.get('/admin/overview'),
