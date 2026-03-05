@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, getSavedUser } from '../../api/client'
 import { useAsyncAction } from '../../composables/useAsyncAction'
@@ -82,6 +82,8 @@ const canLoadPublishedExams = computed(() => canOpenTeacherPanel.value)
 const selectedPaperOption = computed(
   () => paperOptions.value.find((item) => String(item.id) === String(createForm.paperId || '')) || null
 )
+const antiCheatThrottleMs = 1500
+const antiCheatLastSentAt = reactive({})
 
 const formatDateTimeDisplay = (value) => {
   if (!value) return '-'
@@ -176,6 +178,87 @@ const formatDateTimeForBackend = (value) => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
     date.getHours()
   )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+const resolveCurrentSessionId = () => String(submitSessionId.value || startedSession.value?.sessionId || '').trim()
+
+const canReportAntiCheatEvent = () => {
+  if (activePage.value !== 'student') return false
+  if (!resolveCurrentSessionId()) return false
+  const status = String(startedSession.value?.status || submitResult.value?.status || '').toUpperCase()
+  return status !== 'SUBMITTED' && status !== 'FORCE_SUBMITTED'
+}
+
+const shouldThrottleAntiCheatEvent = (eventType) => {
+  const key = String(eventType || 'OTHER').trim().toUpperCase() || 'OTHER'
+  const now = Date.now()
+  const lastTs = antiCheatLastSentAt[key] || 0
+  if (now - lastTs < antiCheatThrottleMs) {
+    return true
+  }
+  antiCheatLastSentAt[key] = now
+  return false
+}
+
+const reportAntiCheatEvent = async (eventType, metadata = {}) => {
+  if (!canReportAntiCheatEvent()) return
+  const normalizedEventType = String(eventType || 'OTHER').trim().toUpperCase() || 'OTHER'
+  if (shouldThrottleAntiCheatEvent(normalizedEventType)) return
+  const sessionId = resolveCurrentSessionId()
+  if (!sessionId) return
+  try {
+    await api.reportAntiCheatEvent(sessionId, {
+      eventType: normalizedEventType,
+      metadata,
+    })
+  } catch (error) {
+    // Anti-cheat telemetry failures must not break the answer flow.
+    console.warn('anti-cheat report failed', error)
+  }
+}
+
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'hidden') {
+    reportAntiCheatEvent('SWITCH_SCREEN', { visibilityState: 'hidden' })
+  }
+}
+
+const handleWindowBlur = () => {
+  reportAntiCheatEvent('WINDOW_BLUR', { source: 'window.blur' })
+}
+
+const handleCopy = (event) => {
+  reportAntiCheatEvent('COPY_ATTEMPT', {
+    targetTag: event?.target?.tagName || '',
+  })
+}
+
+const handlePaste = (event) => {
+  reportAntiCheatEvent('PASTE_ATTEMPT', {
+    targetTag: event?.target?.tagName || '',
+  })
+}
+
+const handleOffline = () => {
+  reportAntiCheatEvent('NETWORK_DISCONNECT', { online: false })
+}
+
+const bindAntiCheatListeners = () => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  window.addEventListener('blur', handleWindowBlur)
+  window.addEventListener('copy', handleCopy)
+  window.addEventListener('paste', handlePaste)
+  window.addEventListener('offline', handleOffline)
+}
+
+const unbindAntiCheatListeners = () => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  window.removeEventListener('blur', handleWindowBlur)
+  window.removeEventListener('copy', handleCopy)
+  window.removeEventListener('paste', handlePaste)
+  window.removeEventListener('offline', handleOffline)
 }
 
 const normalizeDraftAnswer = (type, rawValue) => {
@@ -490,6 +573,12 @@ const submitSession = async () => {
   }
 }
 
+watch(resolveCurrentSessionId, () => {
+  Object.keys(antiCheatLastSentAt).forEach((key) => {
+    delete antiCheatLastSentAt[key]
+  })
+})
+
 watch(activePage, (page) => {
   if (page === 'teacher') {
     if (canLoadStudentDirectory.value) {
@@ -540,6 +629,7 @@ watch(canLoadPublishedExams, (enabled) => {
 })
 
 onMounted(async () => {
+  bindAntiCheatListeners()
   syncPageByCurrentRole()
   if (canLoadStudentDirectory.value) {
     await loadStudentOptions()
@@ -553,6 +643,10 @@ onMounted(async () => {
   if (activePage.value === 'student' && canAccessAssignedExams.value) {
     await loadAssignedExams()
   }
+})
+
+onUnmounted(() => {
+  unbindAntiCheatListeners()
 })
 </script>
 
